@@ -1,0 +1,57 @@
+---
+description: Keep architecture and glossary documents synchronized with code changes.
+alwaysApply: true
+---
+
+# Documentation Sync Rules
+
+The `docs/architecture/` directory is the source of truth for core concepts shared by this backend project and related projects such as dashboard, client tools, and future services.
+
+The agent must treat these documents as shared architecture contracts, not local notes.
+
+## Existing Core Glossaries
+
+The agent must check these documents before modifying related concepts:
+
+- `docs/architecture/glossaries/environment.md`
+- `docs/architecture/glossaries/testcase.md`
+
+## When Documentation Must Be Updated
+
+The agent must update `docs/architecture/` when adding or changing:
+
+- Core domain concepts
+- Entity definitions
+- Value object definitions
+- Test case definitions
+- Test environment definitions
+- API contracts
+- Request/response structures
+- Repository interfaces
+- Storage model assumptions
+- Naming conventions
+- Cross-project shared terminology
+
+## Mandatory Rules
+
+- Do not introduce a new core term without checking existing glossary documents first.
+- Do not rename a core concept in code without updating the corresponding document.
+- Do not create a new definition that conflicts with `docs/architecture/glossaries/`.
+- If a change affects related projects such as dashboard or client tools, document the impact clearly.
+- If a feature is intentionally backend-only, state that in the relevant document when needed.
+
+## Documentation Style
+
+Documentation should be concise, structural, and implementation-aware.
+
+Prefer sections such as:
+
+- Purpose
+- Definition
+- Scope
+- Fields
+- Rules
+- Out of Scope
+- Related Concepts
+
+Avoid vague descriptions that future agents cannot use for implementation.

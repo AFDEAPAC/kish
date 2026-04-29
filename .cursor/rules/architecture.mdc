@@ -1,0 +1,66 @@
+---
+description: Enforce Light Clean Architecture rules for agent coding.
+alwaysApply: true
+---
+
+# Light Clean Architecture Rules
+
+This project uses a Light Clean Architecture style.
+
+The goal is not to over-engineer the codebase, but to keep the architecture understandable, maintainable, and safe for long-term agent-assisted development.
+
+## Core Goals
+
+The agent must prioritize:
+
+1. Clear architecture boundaries
+2. Reduced duplicate development
+3. Maintainable code that future agents can understand quickly
+
+## Required Architecture References
+
+Before implementing or modifying core behavior, the agent must check the existing architecture documents under:
+
+- `docs/architecture/`
+- `docs/architecture/glossaries/environment.md`
+- `docs/architecture/glossaries/testcase.md`
+
+These documents define the shared core concepts for this backend project and related projects such as dashboards or clients.
+
+## Layering Rules
+
+The agent should follow these lightweight boundaries:
+
+- Domain layer defines core entities, value objects, domain concepts, and business terminology.
+- Application/usecase layer coordinates workflows.
+- Interface/handler layer handles HTTP/API/CLI input and output mapping.
+- Infrastructure layer implements external details such as database, filesystem, object storage, external services, or system calls.
+
+## Mandatory Rules
+
+- Do not put business rules directly inside handlers, routers, controllers, or infrastructure implementations.
+- Do not let domain code depend on infrastructure code.
+- Do not create duplicate entities, DTOs, services, repositories, or helper packages without checking existing definitions first.
+- Prefer extending existing concepts over creating parallel concepts.
+- Avoid unnecessary abstractions when there is only one concrete use case.
+- Keep implementation simple unless the architecture document explicitly requires extensibility.
+- When unsure, preserve the current project structure instead of introducing a new pattern.
+
+## Before Adding New Features
+
+The agent must first check:
+
+1. Whether the concept already exists in `docs/architecture/`
+2. Whether the concept already exists in code
+3. Whether the feature belongs to domain, application/usecase, interface, or infrastructure layer
+4. Whether an existing type, interface, usecase, repository, or handler can be reused
+
+## Expected Behavior
+
+The agent should explain architectural placement briefly before large changes.
+
+For example:
+
+- "This belongs in the usecase layer because it coordinates upload validation and persistence."
+- "This belongs in the domain layer because it defines a core TestCase concept."
+- "This belongs in infrastructure because it implements filesystem storage."
