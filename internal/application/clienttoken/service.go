@@ -1,8 +1,8 @@
 // Package clienttoken provides the application-layer service for client token lifecycle.
 //
 // ClientTokenService handles creation, listing, and revocation of client tokens.
-// It enforces that raw tokens are never stored, that scopes are valid, and that
-// users can only manage their own tokens.
+// It enforces token storage rules, valid scopes, and ownership checks for token
+// management operations.
 package clienttoken
 
 import (
@@ -17,6 +17,10 @@ import (
 
 // ErrUnauthorized is returned when a user attempts to manage a token they do not own.
 var ErrUnauthorized = errors.New("cannot manage another user's client token")
+
+// ErrTokenContentUnavailable is returned when a token cannot be revealed because
+// it is legacy, revoked, expired, or the encryption key is unavailable.
+var ErrTokenContentUnavailable = errors.New("token content is unavailable; create a new token")
 
 // CreateInput carries the fields for creating a new client token.
 type CreateInput struct {
@@ -33,16 +37,32 @@ type CreateResult struct {
 	RawToken string
 }
 
+// RevealResult contains stored token metadata and the decrypted raw token.
+type RevealResult struct {
+	Token    *clienttoken.ClientToken
+	RawToken string
+}
+
 // Service provides client token management operations.
 type Service struct {
 	repo   clienttoken.Repository
 	prefix string
+	cipher tokenCipher
+}
+
+type tokenCipher interface {
+	Encrypt(plaintext string) (string, error)
+	Decrypt(encoded string) (string, error)
 }
 
 // NewService constructs a ClientTokenService.
 // prefix is the token prefix (e.g. "kish"), configured via ClientTokenConfig.
-func NewService(repo clienttoken.Repository, prefix string) *Service {
-	return &Service{repo: repo, prefix: prefix}
+func NewService(repo clienttoken.Repository, prefix string, ciphers ...tokenCipher) *Service {
+	var cipher tokenCipher
+	if len(ciphers) > 0 {
+		cipher = ciphers[0]
+	}
+	return &Service{repo: repo, prefix: prefix, cipher: cipher}
 }
 
 // CreateToken generates and persists a new client token.
@@ -67,15 +87,23 @@ func (s *Service) CreateToken(ctx context.Context, in CreateInput) (*CreateResul
 	if err != nil {
 		return nil, fmt.Errorf("generate token: %w", err)
 	}
+	encryptedToken := ""
+	if s.cipher != nil {
+		encryptedToken, err = s.cipher.Encrypt(rawToken)
+		if err != nil {
+			return nil, fmt.Errorf("encrypt token: %w", err)
+		}
+	}
 
 	t := &clienttoken.ClientToken{
-		UserID:      in.UserID,
-		Name:        in.Name,
-		TokenPrefix: security.TokenPrefix(rawToken),
-		TokenHash:   security.HashToken(rawToken),
-		Scopes:      in.Scopes,
-		ExpiresAt:   in.ExpiresAt,
-		Unlimited:   in.Unlimited,
+		UserID:         in.UserID,
+		Name:           in.Name,
+		TokenPrefix:    security.TokenPrefix(rawToken),
+		TokenHash:      security.HashToken(rawToken),
+		EncryptedToken: encryptedToken,
+		Scopes:         in.Scopes,
+		ExpiresAt:      in.ExpiresAt,
+		Unlimited:      in.Unlimited,
 	}
 
 	created, err := s.repo.Create(ctx, t)
@@ -84,6 +112,26 @@ func (s *Service) CreateToken(ctx context.Context, in CreateInput) (*CreateResul
 	}
 
 	return &CreateResult{Token: created, RawToken: rawToken}, nil
+}
+
+// RevealToken returns the raw token for an owned, valid token created after
+// encrypted token storage was enabled.
+func (s *Service) RevealToken(ctx context.Context, tokenID, requestingUserID string) (*RevealResult, error) {
+	t, err := s.repo.FindByID(ctx, tokenID)
+	if err != nil {
+		return nil, err
+	}
+	if t.UserID != requestingUserID {
+		return nil, ErrUnauthorized
+	}
+	if !t.IsValid(time.Now().UTC()) || t.EncryptedToken == "" || s.cipher == nil {
+		return nil, ErrTokenContentUnavailable
+	}
+	raw, err := s.cipher.Decrypt(t.EncryptedToken)
+	if err != nil {
+		return nil, ErrTokenContentUnavailable
+	}
+	return &RevealResult{Token: t, RawToken: raw}, nil
 }
 
 // ListTokens returns all client tokens owned by the given user.

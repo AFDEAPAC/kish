@@ -4,8 +4,8 @@
 // kish upload and machine-to-machine integrations. They are not suitable for
 // interactive web dashboard sessions, which use JWT.
 //
-// Token storage rule: only the SHA-256 hash of the raw token is persisted.
-// The raw token (kish_<hex>) is shown exactly once at creation time.
+// Token storage rule: the SHA-256 hash is persisted for lookup, and newer
+// tokens may also persist an encrypted raw token for owner reveal.
 package clienttoken
 
 import (
@@ -38,18 +38,19 @@ func ValidScope(s Scope) bool {
 // The raw token is never stored. Only TokenHash (SHA-256) and TokenPrefix
 // (first 8 characters of the raw token, for display) are persisted.
 type ClientToken struct {
-	ID          string     `bson:"_id"          json:"id"`
-	UserID      string     `bson:"user_id"      json:"user_id"`
-	Name        string     `bson:"name"         json:"name"`
-	TokenPrefix string     `bson:"token_prefix" json:"token_prefix"`
-	TokenHash   string     `bson:"token_hash"   json:"-"`
-	Scopes      []Scope    `bson:"scopes"       json:"scopes"`
-	ExpiresAt   *time.Time `bson:"expires_at"   json:"expires_at,omitempty"`
-	Unlimited   bool       `bson:"unlimited"    json:"unlimited"`
-	RevokedAt   *time.Time `bson:"revoked_at"   json:"revoked_at,omitempty"`
-	LastUsedAt  *time.Time `bson:"last_used_at" json:"last_used_at,omitempty"`
-	CreatedAt   time.Time  `bson:"created_at"   json:"created_at"`
-	UpdatedAt   time.Time  `bson:"updated_at"   json:"updated_at"`
+	ID             string     `bson:"_id"          json:"id"`
+	UserID         string     `bson:"user_id"      json:"user_id"`
+	Name           string     `bson:"name"         json:"name"`
+	TokenPrefix    string     `bson:"token_prefix" json:"token_prefix"`
+	TokenHash      string     `bson:"token_hash"   json:"-"`
+	EncryptedToken string     `bson:"encrypted_token,omitempty" json:"-"`
+	Scopes         []Scope    `bson:"scopes"       json:"scopes"`
+	ExpiresAt      *time.Time `bson:"expires_at"   json:"expires_at,omitempty"`
+	Unlimited      bool       `bson:"unlimited"    json:"unlimited"`
+	RevokedAt      *time.Time `bson:"revoked_at"   json:"revoked_at,omitempty"`
+	LastUsedAt     *time.Time `bson:"last_used_at" json:"last_used_at,omitempty"`
+	CreatedAt      time.Time  `bson:"created_at"   json:"created_at"`
+	UpdatedAt      time.Time  `bson:"updated_at"   json:"updated_at"`
 }
 
 // IsValid reports whether the token may be used for authentication.

@@ -54,6 +54,49 @@ mongodb:
 	}
 }
 
+func TestLoad_S3StorageConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "kish.yaml")
+	yamlContent := `
+storage:
+  type: "s3"
+  s3:
+    bucket: "kish-artifacts"
+    region: "ap-southeast-1"
+    endpoint: "http://127.0.0.1:9000"
+    prefix: "kish/dev/artifacts"
+    force_path_style: true
+    access_key_id: "minio"
+    secret_access_key: "secret"
+`
+	if err := os.WriteFile(cfgPath, []byte(yamlContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load(cfgPath, config.Overrides{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Storage.Type != "s3" {
+		t.Fatalf("expected storage.type=s3, got %q", cfg.Storage.Type)
+	}
+	if cfg.Storage.S3.Bucket != "kish-artifacts" {
+		t.Errorf("unexpected s3 bucket: %q", cfg.Storage.S3.Bucket)
+	}
+	if cfg.Storage.S3.Region != "ap-southeast-1" {
+		t.Errorf("unexpected s3 region: %q", cfg.Storage.S3.Region)
+	}
+	if cfg.Storage.S3.Endpoint != "http://127.0.0.1:9000" {
+		t.Errorf("unexpected s3 endpoint: %q", cfg.Storage.S3.Endpoint)
+	}
+	if cfg.Storage.S3.Prefix != "kish/dev/artifacts" {
+		t.Errorf("unexpected s3 prefix: %q", cfg.Storage.S3.Prefix)
+	}
+	if !cfg.Storage.S3.ForcePathStyle {
+		t.Error("expected force_path_style=true")
+	}
+}
+
 func TestLoad_CLIOverridesFile(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "kish.yaml")

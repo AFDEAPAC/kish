@@ -50,12 +50,41 @@ func (r *fakeTCRepo) Update(_ context.Context, id string, tc *testcase.TestCase)
 	r.cases[id] = tc
 	return nil
 }
+func (r *fakeTCRepo) UpdatePartial(_ context.Context, id string, _ testcase.MetadataPatch) error {
+	if _, ok := r.cases[id]; !ok {
+		return testcase.ErrNotFound
+	}
+	return nil
+}
+func (r *fakeTCRepo) UpdateStatus(_ context.Context, id string, status testcase.Status, vis testcase.Visibility) error {
+	tc, ok := r.cases[id]
+	if !ok {
+		return testcase.ErrNotFound
+	}
+	tc.Status = status
+	tc.Visibility = vis
+	return nil
+}
 func (r *fakeTCRepo) FindByID(_ context.Context, id string) (*testcase.TestCase, error) {
 	tc, ok := r.cases[id]
 	if !ok {
 		return nil, testcase.ErrNotFound
 	}
 	return tc, nil
+}
+func (r *fakeTCRepo) List(_ context.Context, _ testcase.ListFilter) ([]*testcase.TestCase, error) {
+	out := make([]*testcase.TestCase, 0, len(r.cases))
+	for _, tc := range r.cases {
+		out = append(out, tc)
+	}
+	return out, nil
+}
+func (r *fakeTCRepo) Delete(_ context.Context, id string) error {
+	if _, ok := r.cases[id]; !ok {
+		return testcase.ErrNotFound
+	}
+	delete(r.cases, id)
+	return nil
 }
 
 type fakeArtRepo struct {
@@ -256,5 +285,49 @@ func TestDeleteArtifact_Missing_IsNil(t *testing.T) {
 	svc := newSvc("tc1")
 	if err := svc.DeleteArtifact(context.Background(), "tc1", "ghost.txt"); err != nil {
 		t.Errorf("expected nil for missing artifact delete, got %v", err)
+	}
+}
+
+// Published TestCases must reject result and environment writes/deletes;
+// other artifact types remain mutable so scripts and snapshots can be appended.
+func TestPutArtifact_PublishedResultImmutable(t *testing.T) {
+	tcRepo := newFakeTCRepo("tc1")
+	tcRepo.cases["tc1"].Status = testcase.StatusPublished
+	tcRepo.cases["tc1"].Visibility = testcase.VisibilityPublic
+	svc := appArtifact.NewService(tcRepo, newFakeArtRepo(), newFakeStore())
+
+	_, err := svc.PutArtifact(context.Background(), "tc1", "result.txt", "result", "text/plain", strings.NewReader("v2"), -1)
+	if !errors.Is(err, testcase.ErrPublishedImmutable) {
+		t.Errorf("expected ErrPublishedImmutable for result on published, got %v", err)
+	}
+
+	_, err = svc.PutArtifact(context.Background(), "tc1", "env.json", "environment", "application/json", strings.NewReader("{}"), -1)
+	if !errors.Is(err, testcase.ErrPublishedImmutable) {
+		t.Errorf("expected ErrPublishedImmutable for environment on published, got %v", err)
+	}
+}
+
+func TestPutArtifact_PublishedScriptAllowed(t *testing.T) {
+	tcRepo := newFakeTCRepo("tc1")
+	tcRepo.cases["tc1"].Status = testcase.StatusPublished
+	tcRepo.cases["tc1"].Visibility = testcase.VisibilityPublic
+	svc := appArtifact.NewService(tcRepo, newFakeArtRepo(), newFakeStore())
+
+	_, err := svc.PutArtifact(context.Background(), "tc1", "extra.sh", "script", "text/x-shellscript", strings.NewReader("#!/bin/sh"), -1)
+	if err != nil {
+		t.Errorf("expected script append to succeed on published, got %v", err)
+	}
+}
+
+func TestDeleteArtifact_PublishedResultImmutable(t *testing.T) {
+	tcRepo := newFakeTCRepo("tc1")
+	svc := appArtifact.NewService(tcRepo, newFakeArtRepo(), newFakeStore())
+	_, _ = svc.PutArtifact(context.Background(), "tc1", "result.txt", "result", "text/plain", strings.NewReader("v1"), -1)
+
+	tcRepo.cases["tc1"].Status = testcase.StatusPublished
+	tcRepo.cases["tc1"].Visibility = testcase.VisibilityPublic
+
+	if err := svc.DeleteArtifact(context.Background(), "tc1", "result.txt"); !errors.Is(err, testcase.ErrPublishedImmutable) {
+		t.Errorf("expected ErrPublishedImmutable, got %v", err)
 	}
 }

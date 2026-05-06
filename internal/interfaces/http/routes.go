@@ -20,7 +20,8 @@ import (
 // Auth routes are under /api/auth/.
 // User management routes are under /api/users/ (admin-only).
 // Current-user routes are under /api/me/.
-// The legacy GET /api/testcases/{id} route is kept for backward-compatible reads.
+// The legacy GET /api/testcases/{id} route is kept for backward-compatible reads,
+// but is now visibility-restricted (anonymous reads see public-published only).
 func RegisterRoutes(
 	mux *http.ServeMux,
 	health *handler.HealthHandler,
@@ -34,7 +35,7 @@ func RegisterRoutes(
 ) {
 	mux.HandleFunc("GET /healthz", health.Check)
 
-	// Auth endpoints — no guard needed (login/refresh are public).
+	// Auth endpoints — login/refresh are public; logout/me require authentication.
 	mux.HandleFunc("POST /api/auth/login", authH.Login)
 	mux.HandleFunc("POST /api/auth/refresh", authH.Refresh)
 	mux.HandleFunc("POST /api/auth/logout", middleware.RequireAuthenticated(authH.Logout))
@@ -55,16 +56,26 @@ func RegisterRoutes(
 	// Client token management — JWT only; client tokens cannot create more tokens.
 	mux.HandleFunc("POST /api/me/client-tokens", middleware.RequireJWT(ctH.Create))
 	mux.HandleFunc("GET /api/me/client-tokens", middleware.RequireJWT(ctH.List))
+	mux.HandleFunc("GET /api/me/client-tokens/{token_id}", middleware.RequireJWT(ctH.Reveal))
 	mux.HandleFunc("DELETE /api/me/client-tokens/{token_id}", middleware.RequireJWT(ctH.Revoke))
 
-	// TestCase metadata API (v1) — requires authentication (CreateV1 checks internally).
+	// TestCase metadata API (v1).
+	// List + GetV1 accept anonymous requests but filter to public-published when
+	// caller is anonymous. Create / Update / Publish require authentication and
+	// enforce ownership inside the handler/service layer.
+	mux.HandleFunc("GET /api/v1/testcases", tc.List)
 	mux.HandleFunc("POST /api/v1/testcases", tc.CreateV1)
+	mux.HandleFunc("GET /api/v1/testcases/{case_id}", tc.GetV1)
+	mux.HandleFunc("PATCH /api/v1/testcases/{case_id}", middleware.RequireAuthenticated(tc.Update))
+	mux.HandleFunc("POST /api/v1/testcases/{case_id}/publish", middleware.RequireAuthenticated(tc.Publish))
+	mux.HandleFunc("DELETE /api/v1/testcases/{case_id}", middleware.RequireAuthenticated(tc.Delete))
 
-	// TestCase GET kept for backward compatibility with pre-artifact-API documents.
-	// Read is public; no auth required.
+	// Legacy GET kept for backward compatibility with pre-v1 clients.
+	// Visibility is now enforced; anonymous reads only succeed for public-published.
 	mux.HandleFunc("GET /api/testcases/{id}", tc.Get)
 
-	// Artifact API (v1) — reads are public; writes require authentication (checked in handler).
+	// Artifact API (v1) — reads enforce visibility against the parent TestCase;
+	// writes require authentication (checked inside the handler).
 	mux.HandleFunc("GET /api/v1/testcases/{case_id}/artifacts", art.List)
 	mux.HandleFunc("PUT /api/v1/testcases/{case_id}/artifacts/{artifact_name}", art.Put)
 	mux.HandleFunc("GET /api/v1/testcases/{case_id}/artifacts/{artifact_name}", art.Get)

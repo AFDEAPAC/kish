@@ -36,8 +36,10 @@ func NewService(tcRepo testcase.Repository, artRepo domartifact.Repository, stor
 // Workflow:
 //  1. Validate artifactName and artifactType.
 //  2. Verify the TestCase exists (returns testcase.ErrNotFound if not).
-//  3. Stream r through a SHA-256 hasher while writing to the ObjectStore.
-//  4. Upsert the artifact metadata in the repository.
+//  3. Reject the upload when the TestCase is published and the artifact_type
+//     is `result` or `environment` (those are immutable after publish).
+//  4. Stream r through a SHA-256 hasher while writing to the ObjectStore.
+//  5. Upsert the artifact metadata in the repository.
 func (s *Service) PutArtifact(
 	ctx context.Context,
 	caseID, artifactName, artifactType, contentType string,
@@ -59,9 +61,13 @@ func (s *Service) PutArtifact(
 		contentType = "application/octet-stream"
 	}
 
-	// Verify TestCase exists before writing any content.
-	if _, err := s.tcRepo.FindByID(ctx, caseID); err != nil {
+	// Verify TestCase exists and is mutable for this artifact type.
+	tc, err := s.tcRepo.FindByID(ctx, caseID)
+	if err != nil {
 		return nil, err
+	}
+	if isImmutableOnPublished(artType) && tc.IsPublished() {
+		return nil, testcase.ErrPublishedImmutable
 	}
 
 	storageKey := domartifact.StorageKeyFor(caseID, artifactName)
@@ -130,6 +136,9 @@ func (s *Service) ListArtifacts(ctx context.Context, caseID string) ([]*domartif
 // If the metadata does not exist, nil is returned (idempotent).
 // If the metadata exists but the object is already gone from the store,
 // the metadata is still removed so the system stays consistent.
+//
+// Deletion of result and environment artifacts is rejected once the parent
+// TestCase has been published, mirroring the upload immutability rule.
 func (s *Service) DeleteArtifact(ctx context.Context, caseID, artifactName string) error {
 	if err := domartifact.ValidateArtifactName(artifactName); err != nil {
 		return err
@@ -143,12 +152,43 @@ func (s *Service) DeleteArtifact(ctx context.Context, caseID, artifactName strin
 		return err
 	}
 
+	if isImmutableOnPublished(meta.ArtifactType) {
+		tc, err := s.tcRepo.FindByID(ctx, caseID)
+		if err != nil && !errors.Is(err, testcase.ErrNotFound) {
+			return err
+		}
+		if tc != nil && tc.IsPublished() {
+			return testcase.ErrPublishedImmutable
+		}
+	}
+
 	// Delete object first; if it's already gone, continue to clean up metadata.
 	if err := s.store.DeleteObject(ctx, meta.StorageKey); err != nil && !errors.Is(err, storage.ErrObjectNotFound) {
 		return fmt.Errorf("delete artifact content: %w", err)
 	}
 
 	return s.artRepo.Delete(ctx, caseID, artifactName)
+}
+
+// isImmutableOnPublished reports whether artifacts of the given type cannot be
+// written once their parent TestCase is published.
+//
+// Result and EnvironmentSnapshot artifacts represent the canonical record of
+// the test run and must stay byte-identical after publication. Scripts, logs,
+// raw, and other artifacts may continue to be appended on a published TestCase.
+func isImmutableOnPublished(t domartifact.ArtifactType) bool {
+	switch t {
+	case domartifact.ArtifactTypeResult, domartifact.ArtifactTypeEnvironment:
+		return true
+	}
+	return false
+}
+
+// FindTestCase returns the parent TestCase for visibility checks performed by
+// HTTP handlers (e.g. anonymous artifact reads must verify the parent is
+// public-published). Returns testcase.ErrNotFound when the case does not exist.
+func (s *Service) FindTestCase(ctx context.Context, caseID string) (*testcase.TestCase, error) {
+	return s.tcRepo.FindByID(ctx, caseID)
 }
 
 // CheckOwnership verifies that the TestCase identified by caseID is owned by ownerUserID.

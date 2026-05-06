@@ -1,0 +1,86 @@
+# Example runtime configuration for `kish api`.
+#
+# Copy this file to kish.yaml, update secrets and connection details, then run:
+#
+#   kish api --config kish.yaml
+#
+# CLI flags such as --host, --port, --mongo-uri, and --mongo-database override
+# values from this file.
+
+server:
+  # HTTP bind address for the API server.
+  host: "0.0.0.0"
+  # Default API port used by Kish backend and dashboard local development.
+  port: 30151
+
+mongodb:
+  # MongoDB connection string.
+  uri: "mongodb://localhost:27017"
+  # Database name used by repositories.
+  database: "kish"
+
+limits:
+  # Maximum upload size for result artifacts, in bytes.
+  test_result_max_bytes: 5242880
+  # Maximum upload size for script artifacts, in bytes.
+  test_script_max_bytes: 1048576
+  # Maximum upload size for environment snapshot artifacts, in bytes.
+  environment_snapshot_max_bytes: 5242880
+
+storage:
+  # Supported values: "local", "s3".
+  type: "local"
+  local:
+    # Base directory for artifact object storage.
+    root: "./data/artifacts"
+
+  # S3-compatible object storage alternative.
+  #
+  # To use it, set storage.type to "s3" above and configure this block.
+  # The API server supports AWS S3 and S3-compatible services such as MinIO,
+  # Ceph, Cloudflare R2, or other providers with an S3 API.
+  #
+  # s3:
+  #   # S3 bucket used for TestCase artifact objects.
+  #   bucket: "kish-artifacts"
+  #   # Region for AWS S3. For S3-compatible storage, keep this set to the
+  #   # provider's expected region or a placeholder such as "us-east-1".
+  #   region: "us-east-1"
+  #   # Optional endpoint for S3-compatible services such as MinIO, Ceph, or R2.
+  #   # Leave empty when using AWS S3's standard regional endpoints.
+  #   endpoint: "http://127.0.0.1:9000"
+  #   # Prefix under the bucket for all Kish artifact objects.
+  #   prefix: "kish/artifacts"
+  #   # Force path-style addressing for MinIO and many S3-compatible services.
+  #   force_path_style: true
+  #   # Credentials should normally come from environment variables or the
+  #   # runtime identity (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, IAM role).
+  #   access_key_id: "${AWS_ACCESS_KEY_ID}"
+  #   secret_access_key: "${AWS_SECRET_ACCESS_KEY}"
+
+auth:
+  # Required for JWT access token signing. Replace this before running any
+  # non-local deployment.
+  jwt_secret: "replace-with-a-strong-random-secret"
+  # Used to encrypt stored client token contents for owner reveal. Use a strong
+  # random value and keep it stable; rotating it makes existing reveal data unreadable.
+  client_token_encryption_key: "replace-with-a-strong-random-token-encryption-key"
+  # Go duration strings are supported by the config loader.
+  access_token_ttl: "24h"
+  refresh_token_ttl: "720h"
+  password_min_length: 8
+
+client_token:
+  # Generated API tokens use this prefix, for example kish_<random>.
+  prefix: "kish"
+  # Default lifetime for client tokens when enabled by token creation flows.
+  default_ttl: "2160h"
+  # Allow users to create non-expiring client tokens.
+  allow_unlimited: true
+
+bootstrap:
+  # Enable only for first-time setup when no admin user exists yet.
+  enabled: false
+  admin_email: "admin@example.com"
+  admin_password: "replace-with-a-strong-initial-password"
+  admin_display_name: "Kish Admin"

@@ -32,16 +32,17 @@ type MongoDBConfig struct {
 // LimitsConfig holds payload size limits enforced by the API server.
 // All values are in bytes.
 type LimitsConfig struct {
-	TestResultMaxBytes           int64 `mapstructure:"test_result_max_bytes"`
-	TestScriptMaxBytes           int64 `mapstructure:"test_script_max_bytes"`
-	EnvironmentSnapshotMaxBytes  int64 `mapstructure:"environment_snapshot_max_bytes"`
+	TestResultMaxBytes          int64 `mapstructure:"test_result_max_bytes"`
+	TestScriptMaxBytes          int64 `mapstructure:"test_script_max_bytes"`
+	EnvironmentSnapshotMaxBytes int64 `mapstructure:"environment_snapshot_max_bytes"`
 }
 
 // StorageConfig holds artifact storage backend settings.
 type StorageConfig struct {
-	// Type selects the storage backend. Currently only "local" is supported.
+	// Type selects the storage backend. Supported values: "local", "s3".
 	Type  string             `mapstructure:"type"`
 	Local StorageLocalConfig `mapstructure:"local"`
+	S3    StorageS3Config    `mapstructure:"s3"`
 }
 
 // StorageLocalConfig holds settings for the local filesystem backend.
@@ -50,11 +51,38 @@ type StorageLocalConfig struct {
 	Root string `mapstructure:"root"`
 }
 
+// StorageS3Config holds settings for S3-compatible artifact storage.
+type StorageS3Config struct {
+	// Bucket is the S3 bucket that stores artifact objects.
+	Bucket string `mapstructure:"bucket"`
+
+	// Region is the AWS region or provider-compatible region value.
+	Region string `mapstructure:"region"`
+
+	// Endpoint optionally points to an S3-compatible service such as MinIO.
+	Endpoint string `mapstructure:"endpoint"`
+
+	// Prefix is prepended to all object keys within the bucket.
+	Prefix string `mapstructure:"prefix"`
+
+	// ForcePathStyle enables path-style requests for S3-compatible providers.
+	ForcePathStyle bool `mapstructure:"force_path_style"`
+
+	// AccessKeyID and SecretAccessKey optionally provide static credentials.
+	// When empty, the AWS SDK default credential chain is used.
+	AccessKeyID     string `mapstructure:"access_key_id"`
+	SecretAccessKey string `mapstructure:"secret_access_key"`
+}
+
 // AuthConfig holds JWT and password settings for the API server.
 type AuthConfig struct {
 	// JWTSecret is the HMAC-SHA256 signing key for access tokens.
 	// Must be set to a strong random value in production.
 	JWTSecret string `mapstructure:"jwt_secret"`
+
+	// ClientTokenEncryptionKey protects stored raw client token values used for
+	// owner reveal. Keep it stable; rotation makes existing encrypted values unreadable.
+	ClientTokenEncryptionKey string `mapstructure:"client_token_encryption_key"`
 
 	// AccessTokenTTL controls how long a JWT access token remains valid.
 	// Default: 24h. Internal deployments may use longer values.
@@ -105,7 +133,7 @@ func DefaultConfig() Config {
 	return Config{
 		Server: ServerConfig{
 			Host: "0.0.0.0",
-			Port: 30051,
+			Port: 30151,
 		},
 		MongoDB: MongoDBConfig{
 			URI:      "mongodb://localhost:27017",
@@ -120,6 +148,9 @@ func DefaultConfig() Config {
 			Type: "local",
 			Local: StorageLocalConfig{
 				Root: "./data/artifacts",
+			},
+			S3: StorageS3Config{
+				Region: "us-east-1",
 			},
 		},
 		Auth: AuthConfig{

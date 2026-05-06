@@ -139,6 +139,34 @@ func TestBuildUploadArtifacts_ArtifactNamesAreBasenames(t *testing.T) {
 	}
 }
 
+func TestResolveAPIBase_UsesFlagFirst(t *testing.T) {
+	t.Setenv("KISH_API_URL", "http://env.example")
+	got := resolveAPIBase(uploadFlags{apiBase: "http://flag.example"})
+	if got != "http://flag.example" {
+		t.Fatalf("expected flag value, got %q", got)
+	}
+}
+
+func TestResolveAPIBase_UsesEnvironmentFallback(t *testing.T) {
+	t.Setenv("KISH_API_URL", "http://env.example")
+	got := resolveAPIBase(uploadFlags{})
+	if got != "http://env.example" {
+		t.Fatalf("expected env value, got %q", got)
+	}
+}
+
+func TestRunUpload_RequiresAPIBaseFromFlagOrEnv(t *testing.T) {
+	t.Setenv("KISH_API_URL", "")
+	dir := t.TempDir()
+	envPath := writeTemp(t, dir, "env.json", `{}`)
+	resultPath := writeTemp(t, dir, "result.txt", "data")
+
+	err := runUpload(uploadFlags{envFile: envPath, result: resultPath})
+	if err == nil || !strings.Contains(err.Error(), "KISH_API_URL") {
+		t.Fatalf("expected missing API URL error, got %v", err)
+	}
+}
+
 // --- ensureCaseID tests ---
 
 func TestEnsureCaseID_WithCaseID_NoAPICalled(t *testing.T) {

@@ -72,6 +72,21 @@ func newCTService() (*appClientToken.Service, *fakeCTRepo) {
 	return appClientToken.NewService(repo, "kish"), repo
 }
 
+type fakeCipher struct{}
+
+func (fakeCipher) Encrypt(plaintext string) (string, error) { return "enc:" + plaintext, nil }
+func (fakeCipher) Decrypt(encoded string) (string, error) {
+	if len(encoded) < 4 {
+		return "", errors.New("bad cipher text")
+	}
+	return encoded[4:], nil
+}
+
+func newRevealCTService() (*appClientToken.Service, *fakeCTRepo) {
+	repo := newFakeCTRepo()
+	return appClientToken.NewService(repo, "kish", fakeCipher{}), repo
+}
+
 func expiresInFuture() *time.Time {
 	t := time.Now().Add(24 * time.Hour)
 	return &t
@@ -113,6 +128,82 @@ func TestCreateToken_RawTokenHasPrefix(t *testing.T) {
 	}
 	if len(result.RawToken) < 5 || result.RawToken[:5] != "kish_" {
 		t.Errorf("expected token to start with kish_, got: %q", result.RawToken)
+	}
+}
+
+func TestCreateToken_StoresEncryptedTokenWhenCipherConfigured(t *testing.T) {
+	svc, _ := newRevealCTService()
+	result, err := svc.CreateToken(context.Background(), appClientToken.CreateInput{
+		UserID:    "usr1",
+		Name:      "test",
+		Scopes:    []clienttoken.Scope{clienttoken.ScopeTestCaseWrite},
+		Unlimited: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Token.EncryptedToken == "" {
+		t.Fatal("expected encrypted token to be stored")
+	}
+	if result.Token.EncryptedToken == result.RawToken {
+		t.Fatal("encrypted token must not equal raw token")
+	}
+}
+
+func TestRevealToken_OwnerGetsRawToken(t *testing.T) {
+	svc, _ := newRevealCTService()
+	result, err := svc.CreateToken(context.Background(), appClientToken.CreateInput{
+		UserID:    "usr1",
+		Name:      "test",
+		Scopes:    []clienttoken.Scope{clienttoken.ScopeTestCaseWrite},
+		Unlimited: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revealed, err := svc.RevealToken(context.Background(), result.Token.ID, "usr1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if revealed.RawToken != result.RawToken {
+		t.Fatalf("expected revealed raw token to match created token")
+	}
+}
+
+func TestRevealToken_NonOwnerRejected(t *testing.T) {
+	svc, _ := newRevealCTService()
+	result, err := svc.CreateToken(context.Background(), appClientToken.CreateInput{
+		UserID:    "usr1",
+		Name:      "test",
+		Scopes:    []clienttoken.Scope{clienttoken.ScopeTestCaseWrite},
+		Unlimited: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = func() error {
+		_, err := svc.RevealToken(context.Background(), result.Token.ID, "usr2")
+		return err
+	}()
+	if !errors.Is(err, appClientToken.ErrUnauthorized) {
+		t.Fatalf("expected ErrUnauthorized, got %v", err)
+	}
+}
+
+func TestRevealToken_LegacyTokenUnavailable(t *testing.T) {
+	svc, _ := newCTService()
+	result, err := svc.CreateToken(context.Background(), appClientToken.CreateInput{
+		UserID:    "usr1",
+		Name:      "test",
+		Scopes:    []clienttoken.Scope{clienttoken.ScopeTestCaseWrite},
+		Unlimited: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.RevealToken(context.Background(), result.Token.ID, "usr1")
+	if !errors.Is(err, appClientToken.ErrTokenContentUnavailable) {
+		t.Fatalf("expected ErrTokenContentUnavailable, got %v", err)
 	}
 }
 

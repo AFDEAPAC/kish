@@ -53,15 +53,18 @@ With --case-id, the provided case_id is used directly. The artifact API returns
 Authentication:
   Provide a client token via --token or the KISH_API_TOKEN environment variable.
   --token takes priority over the environment variable.
+  Provide the API base URL via --api or the KISH_API_URL environment variable.
+  --api takes priority over the environment variable.
   When the server requires authentication and no token is provided, a clear error
   is printed and the command exits non-zero.
 
 Examples:
-  kish upload --api http://127.0.0.1:30051 --token kish_xxx --env env.json --result result.txt
+  kish upload --api http://127.0.0.1:30151 --token kish_xxx --env env.json --result result.txt
   export KISH_API_TOKEN=kish_xxx
-  kish upload --api http://127.0.0.1:30051 --env env.json --result result.txt \
-              --script run.sh --name "sglang test" --type sglang-benchmark
-  kish upload --api http://127.0.0.1:30051 \
+  export KISH_API_URL=http://127.0.0.1:30151
+  kish upload --env env.json --result result.txt --script run.sh \
+              --name "sglang test" --type sglang-benchmark
+  kish upload --api http://127.0.0.1:30151 \
               --case-id TC-20260505143022-a8f3 \
               --env env.json --result result.txt --script run.sh`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -69,7 +72,7 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&flags.apiBase, "api", "", "Base URL of the kish API server (required, e.g. http://127.0.0.1:30051)")
+	cmd.Flags().StringVar(&flags.apiBase, "api", "", "Base URL of the kish API server (overrides KISH_API_URL)")
 	cmd.Flags().StringVar(&flags.envFile, "env", "", "Path to environment snapshot JSON (required)")
 	cmd.Flags().StringVar(&flags.result, "result", "", "Path to test result text file (required)")
 	cmd.Flags().StringArrayVar(&flags.scripts, "script", nil, "Path to a test script (repeatable)")
@@ -78,7 +81,6 @@ Examples:
 	cmd.Flags().StringVar(&flags.testType, "type", "generic", "Test type for a newly created TestCase (e.g. sglang-benchmark)")
 	cmd.Flags().StringVar(&flags.token, "token", "", "Client token for API authentication (overrides KISH_API_TOKEN)")
 
-	_ = cmd.MarkFlagRequired("api")
 	_ = cmd.MarkFlagRequired("env")
 	_ = cmd.MarkFlagRequired("result")
 
@@ -96,6 +98,17 @@ func resolveToken(flags uploadFlags) string {
 	return os.Getenv("KISH_API_TOKEN")
 }
 
+// resolveAPIBase returns the API base URL to use, following the priority order:
+// 1. --api flag
+// 2. KISH_API_URL environment variable
+// Returns empty string if neither is set.
+func resolveAPIBase(flags uploadFlags) string {
+	if flags.apiBase != "" {
+		return flags.apiBase
+	}
+	return os.Getenv("KISH_API_URL")
+}
+
 // runUpload is the top-level upload workflow.
 //
 // Order of operations:
@@ -104,6 +117,11 @@ func resolveToken(flags uploadFlags) string {
 //  3. Upload all artifacts via the unified PUT endpoint.
 func runUpload(flags uploadFlags) error {
 	token := resolveToken(flags)
+	apiBase := resolveAPIBase(flags)
+	if apiBase == "" {
+		return fmt.Errorf("API base URL is required: provide --api or set KISH_API_URL")
+	}
+	flags.apiBase = apiBase
 
 	artifacts, err := buildUploadArtifacts(flags)
 	if err != nil {

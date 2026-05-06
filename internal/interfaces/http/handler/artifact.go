@@ -26,10 +26,19 @@ func NewArtifactHandler(svc *appArtifact.Service) *ArtifactHandler {
 }
 
 // List handles GET /api/v1/testcases/{case_id}/artifacts.
+//
+// Read access mirrors the parent TestCase: anonymous callers may only list
+// artifacts on a public-published TestCase. Otherwise the response is 404 to
+// avoid leaking the existence of private/draft cases.
 func (h *ArtifactHandler) List(w http.ResponseWriter, r *http.Request) {
 	caseID := r.PathValue("case_id")
 	if caseID == "" {
 		writeError(w, http.StatusBadRequest, "case_id is required")
+		return
+	}
+
+	if !h.checkParentReadable(r, caseID) {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("testcase %q not found", caseID))
 		return
 	}
 
@@ -101,6 +110,8 @@ func (h *ArtifactHandler) Put(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, testcase.ErrNotFound):
 			writeError(w, http.StatusNotFound, fmt.Sprintf("testcase %q not found", caseID))
+		case errors.Is(err, testcase.ErrPublishedImmutable):
+			writeError(w, http.StatusConflict, "result and execution-environment artifacts are immutable on published testcases")
 		case isValidationError(err):
 			writeError(w, http.StatusBadRequest, err.Error())
 		default:
@@ -114,12 +125,20 @@ func (h *ArtifactHandler) Put(w http.ResponseWriter, r *http.Request) {
 
 // Get handles GET /api/v1/testcases/{case_id}/artifacts/{artifact_name}.
 // The artifact content is streamed directly to the response body.
+//
+// Visibility is enforced against the parent TestCase: anonymous users only see
+// content of public-published TestCases. Otherwise the response is 404.
 func (h *ArtifactHandler) Get(w http.ResponseWriter, r *http.Request) {
 	caseID := r.PathValue("case_id")
 	artifactName := r.PathValue("artifact_name")
 
 	if caseID == "" {
 		writeError(w, http.StatusBadRequest, "case_id is required")
+		return
+	}
+
+	if !h.checkParentReadable(r, caseID) {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("testcase %q not found", caseID))
 		return
 	}
 
@@ -181,6 +200,8 @@ func (h *ArtifactHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.svc.DeleteArtifact(r.Context(), caseID, artifactName); err != nil {
 		switch {
+		case errors.Is(err, testcase.ErrPublishedImmutable):
+			writeError(w, http.StatusConflict, "result and execution-environment artifacts are immutable on published testcases")
 		case isValidationError(err):
 			writeError(w, http.StatusBadRequest, err.Error())
 		default:
@@ -190,6 +211,36 @@ func (h *ArtifactHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// checkParentReadable reports whether the requesting principal may see the
+// parent TestCase. Used by anonymous-friendly read endpoints (List, Get) so
+// they cannot leak existence of private or draft cases.
+//
+// Returns true when the TestCase exists and the caller satisfies one of:
+//
+//	admin role, or
+//	owner of the TestCase, or
+//	parent TestCase is public-published.
+//
+// Returns false when the TestCase is missing or the caller is not allowed to
+// see it; callers should respond with 404 in either case.
+func (h *ArtifactHandler) checkParentReadable(r *http.Request, caseID string) bool {
+	tc, err := h.svc.FindTestCase(r.Context(), caseID)
+	if err != nil {
+		return false
+	}
+	p := middleware.PrincipalFromContext(r.Context())
+	if p.Role == user.RoleAdmin {
+		return true
+	}
+	if tc.IsPubliclyReadable() {
+		return true
+	}
+	if p.UserID != "" && tc.OwnerUserID != "" && tc.OwnerUserID == p.UserID {
+		return true
+	}
+	return false
 }
 
 // toArtifactMetaResponse maps a domain Artifact to its API response DTO.

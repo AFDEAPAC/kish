@@ -55,6 +55,33 @@ func (h *ClientTokenHandler) Create(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// Reveal handles GET /api/me/client-tokens/{token_id}.
+func (h *ClientTokenHandler) Reveal(w http.ResponseWriter, r *http.Request) {
+	p := middleware.PrincipalFromContext(r.Context())
+	tokenID := r.PathValue("token_id")
+	if tokenID == "" {
+		writeError(w, http.StatusBadRequest, "token_id is required")
+		return
+	}
+
+	result, err := h.svc.RevealToken(r.Context(), tokenID, p.UserID)
+	if err != nil {
+		switch {
+		case errors.Is(err, appClientToken.ErrUnauthorized):
+			writeError(w, http.StatusForbidden, "cannot reveal another user's token")
+		case errors.Is(err, clienttoken.ErrNotFound):
+			writeError(w, http.StatusNotFound, "token not found")
+		case errors.Is(err, appClientToken.ErrTokenContentUnavailable):
+			writeError(w, http.StatusConflict, err.Error())
+		default:
+			writeError(w, http.StatusInternalServerError, "failed to reveal token")
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, dto.RevealClientTokenFromDomain(result.Token, result.RawToken))
+}
+
 // List handles GET /api/me/client-tokens.
 func (h *ClientTokenHandler) List(w http.ResponseWriter, r *http.Request) {
 	p := middleware.PrincipalFromContext(r.Context())

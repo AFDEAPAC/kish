@@ -21,7 +21,9 @@ import (
 	"github.com/AFDEAPAC/kish/internal/config"
 	"github.com/AFDEAPAC/kish/internal/infrastructure/mongodb"
 	"github.com/AFDEAPAC/kish/internal/infrastructure/security"
+	"github.com/AFDEAPAC/kish/internal/infrastructure/storage"
 	"github.com/AFDEAPAC/kish/internal/infrastructure/storage/local"
+	s3store "github.com/AFDEAPAC/kish/internal/infrastructure/storage/s3"
 	infrahttp "github.com/AFDEAPAC/kish/internal/interfaces/http"
 	"github.com/AFDEAPAC/kish/internal/interfaces/http/handler"
 	"github.com/AFDEAPAC/kish/internal/interfaces/http/middleware"
@@ -88,6 +90,46 @@ Examples:
 	return cmd
 }
 
+func newObjectStore(ctx context.Context, cfg config.StorageConfig) (storage.ObjectStore, error) {
+	storageType := cfg.Type
+	if storageType == "" {
+		storageType = "local"
+	}
+	log.Printf("[api] storage backend: %s", storageType)
+	switch storageType {
+	case "local":
+		objStore, err := local.New(cfg.Local.Root)
+		if err != nil {
+			return nil, fmt.Errorf("local storage: %w", err)
+		}
+		log.Printf("[api] local storage root: %s", objStore.Root())
+		return objStore, nil
+	case "s3":
+		objStore, err := s3store.New(ctx, s3store.Options{
+			Bucket:          cfg.S3.Bucket,
+			Region:          cfg.S3.Region,
+			Endpoint:        cfg.S3.Endpoint,
+			Prefix:          cfg.S3.Prefix,
+			ForcePathStyle:  cfg.S3.ForcePathStyle,
+			AccessKeyID:     cfg.S3.AccessKeyID,
+			SecretAccessKey: cfg.S3.SecretAccessKey,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("s3 storage: %w", err)
+		}
+		log.Printf("[api] s3 storage bucket: %s", cfg.S3.Bucket)
+		if cfg.S3.Prefix != "" {
+			log.Printf("[api] s3 storage prefix: %s", cfg.S3.Prefix)
+		}
+		if cfg.S3.Endpoint != "" {
+			log.Printf("[api] s3 storage endpoint: %s", cfg.S3.Endpoint)
+		}
+		return objStore, nil
+	default:
+		return nil, fmt.Errorf("unsupported storage.type %q; supported: local, s3", cfg.Type)
+	}
+}
+
 // runAPI loads config, connects to MongoDB, initialises all services, runs the
 // bootstrap flow, and starts the HTTP server.
 func runAPI(ctx context.Context, flags apiFlags) error {
@@ -105,15 +147,10 @@ func runAPI(ctx context.Context, flags apiFlags) error {
 	}
 
 	// Initialise object store.
-	log.Printf("[api] storage backend: %s", cfg.Storage.Type)
-	if cfg.Storage.Type != "local" && cfg.Storage.Type != "" {
-		return fmt.Errorf("unsupported storage.type %q; only \"local\" is supported", cfg.Storage.Type)
-	}
-	objStore, err := local.New(cfg.Storage.Local.Root)
+	objStore, err := newObjectStore(ctx, cfg.Storage)
 	if err != nil {
-		return fmt.Errorf("local storage: %w", err)
+		return err
 	}
-	log.Printf("[api] local storage root: %s", objStore.Root())
 
 	// Connect MongoDB.
 	log.Printf("[api] connecting to MongoDB at %s (db: %s)", cfg.MongoDB.URI, cfg.MongoDB.Database)
@@ -154,13 +191,21 @@ func runAPI(ctx context.Context, flags apiFlags) error {
 	// Initialise security infrastructure.
 	hasher := security.NewBcryptHasher()
 	jwtSvc := security.NewJWTService(cfg.Auth.JWTSecret, cfg.Auth.AccessTokenTTL)
+	tokenEncryptionKey := cfg.Auth.ClientTokenEncryptionKey
+	if tokenEncryptionKey == "" {
+		tokenEncryptionKey = cfg.Auth.JWTSecret
+	}
+	tokenCipher, err := security.NewTokenCipher(tokenEncryptionKey)
+	if err != nil {
+		return fmt.Errorf("client token encryption: %w", err)
+	}
 
 	// Initialise application services.
-	tcSvc := apptestcase.NewService(tcRepo)
+	tcSvc := apptestcase.NewService(tcRepo, apptestcase.DeleteCleanup{ArtifactRepo: artRepo, Store: objStore})
 	artSvc := appArtifact.NewService(tcRepo, artRepo, objStore)
 	userSvc := appUser.NewService(userRepo, hasher, cfg.Auth.PasswordMinLength)
 	authSvc := appAuth.NewService(userRepo, sessionRepo, hasher, jwtSvc, cfg.Auth.RefreshTokenTTL)
-	ctSvc := appClientToken.NewService(ctRepo, cfg.ClientToken.Prefix)
+	ctSvc := appClientToken.NewService(ctRepo, cfg.ClientToken.Prefix, tokenCipher)
 	bootstrapSvc := appBootstrap.NewService(userRepo, hasher, cfg.Bootstrap, cfg.Auth.PasswordMinLength)
 
 	// Bootstrap: create initial admin if none exists.
@@ -174,7 +219,7 @@ func runAPI(ctx context.Context, flags apiFlags) error {
 	infrahttp.RegisterRoutes(
 		mux,
 		handler.NewHealthHandler(),
-		handler.NewTestCaseHandler(tcSvc),
+		handler.NewTestCaseHandler(tcSvc, userSvc),
 		handler.NewArtifactHandler(artSvc),
 		handler.NewAuthHandler(authSvc, userSvc),
 		handler.NewUserHandler(userSvc),
