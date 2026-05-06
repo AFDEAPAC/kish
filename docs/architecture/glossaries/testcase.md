@@ -225,3 +225,223 @@ environment_snapshot <= 5MB
 * ParserPlugin
 * Visualization
 * AgentCapability
+
+---
+
+## 9. Case ID Format
+
+TestCase ID 由後端（application/testcase service）生成，不由 client 端指定。
+
+格式：
+
+```text
+TC-YYYYMMDDHHMMSS-xxxx
+```
+
+Example:
+
+```text
+TC-20260505143022-a8f3
+```
+
+---
+
+## 10. Artifact Storage Model
+
+從 artifact API 引入後，TestCase 採用兩層儲存架構：
+
+```text
+TestCase document (MongoDB)
+  → metadata only: id, name, test_type, created_at, updated_at
+
+Artifact metadata (MongoDB artifacts collection)
+  → case_id, artifact_name, artifact_type, content_type, size, sha256, storage_key
+
+Artifact content (ObjectStore)
+  → local filesystem (or future S3-compatible backend)
+  → storage key format: testcases/{case_id}/artifacts/{artifact_name}
+```
+
+TestCase 建立時不接受任何 artifact 內容。所有檔案必須在取得 case_id 後，透過 artifact API 分別上傳。
+
+---
+
+## 11. v1 REST API Contract
+
+### 11.1 Create TestCase (metadata only)
+
+```http
+POST /api/v1/testcases
+```
+
+Request body (metadata only — no file content):
+
+```json
+{
+  "name": "optional name",
+  "test_type": "generic"
+}
+```
+
+Response `201 Created`:
+
+```json
+{
+  "case_id": "TC-20260506103000-ab12",
+  "created": true
+}
+```
+
+`test_type` 若為空，後端預設為 `"generic"`。
+
+### 11.2 Upload Artifact
+
+```http
+PUT /api/v1/testcases/{case_id}/artifacts/{artifact_name}
+```
+
+Headers:
+
+```text
+Content-Type:        application/json | text/plain | text/x-shellscript | ...
+X-Kish-Artifact-Type: environment | result | script | raw | log | other
+```
+
+Request body: raw file content (binary safe).
+
+Response `200 OK`:
+
+```json
+{
+  "case_id": "TC-...",
+  "artifact_name": "result.txt",
+  "artifact_type": "result",
+  "content_type": "text/plain",
+  "size": 12345,
+  "checksum_sha256": "...",
+  "created_at": "...",
+  "updated_at": "..."
+}
+```
+
+- `404` if `case_id` does not exist.
+- `400` if `artifact_name` is invalid.
+- Uploading the same `artifact_name` replaces the existing content (upsert).
+- `storage_key` is never included in the API response.
+
+### 11.3 List Artifacts
+
+```http
+GET /api/v1/testcases/{case_id}/artifacts
+```
+
+### 11.4 Download Artifact
+
+```http
+GET /api/v1/testcases/{case_id}/artifacts/{artifact_name}
+```
+
+Response: raw file content streamed to client, with `Content-Type` and `Content-Disposition` headers.
+
+### 11.5 Delete Artifact
+
+```http
+DELETE /api/v1/testcases/{case_id}/artifacts/{artifact_name}
+```
+
+### 11.6 Get TestCase (backward compatible)
+
+```http
+GET /api/testcases/{id}
+```
+
+Returns TestCase metadata. The `result_artifact` and `script_artifacts` fields are present only on documents created before the artifact API was introduced; they will be zero/empty for artifact-API documents.
+
+---
+
+## 12. kish CLI Commands (v1)
+
+### kish api
+
+Starts the API server:
+
+```bash
+kish api --config kish.yaml
+kish api --port 8080 --mongo-uri mongodb://mongo:27017
+```
+
+### kish upload
+
+Uploads files as artifacts for a TestCase.
+
+**Without `--case-id`** (creates a new TestCase metadata record first):
+
+```bash
+kish upload \
+  --api http://127.0.0.1:30051 \
+  --env env.json \
+  --result result.txt \
+  --script run.sh \
+  --name "sglang qwen3 test" \
+  --type sglang-benchmark
+```
+
+Output:
+
+```text
+created testcase: TC-20260506103000-ab12
+uploaded artifact: env.json (type=environment)
+uploaded artifact: result.txt (type=result)
+uploaded artifact: run.sh (type=script)
+artifacts uploaded to testcase: TC-20260506103000-ab12
+```
+
+API sequence:
+
+```text
+POST /api/v1/testcases
+PUT  /api/v1/testcases/{case_id}/artifacts/env.json
+PUT  /api/v1/testcases/{case_id}/artifacts/result.txt
+PUT  /api/v1/testcases/{case_id}/artifacts/run.sh
+```
+
+**With `--case-id`** (uploads to an existing TestCase):
+
+```bash
+kish upload \
+  --api http://127.0.0.1:30051 \
+  --case-id TC-20260506103000-ab12 \
+  --env env.json \
+  --result result.txt
+```
+
+Output:
+
+```text
+uploaded artifact: env.json (type=environment)
+uploaded artifact: result.txt (type=result)
+artifacts uploaded to testcase: TC-20260506103000-ab12
+```
+
+API sequence:
+
+```text
+PUT /api/v1/testcases/{case_id}/artifacts/env.json
+PUT /api/v1/testcases/{case_id}/artifacts/result.txt
+```
+
+The CLI does not pre-validate TestCase existence; the artifact API returns `404` if the `case_id` is unknown.
+
+### Artifact Name Rules
+
+`artifact_name` is always `filepath.Base(local_path)`. Custom artifact names are not supported in this milestone.
+
+### File Size Limits (CLI-side validation)
+
+```text
+--env:    max 5 MB, must be valid JSON
+--result: max 5 MB
+--script: max 1 MB each
+```
+
+Validation occurs before any API call. If any file is invalid, no TestCase is created and no artifact is uploaded.

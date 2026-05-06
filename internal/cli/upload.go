@@ -1,0 +1,257 @@
+package cli
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/spf13/cobra"
+
+	"github.com/AFDEAPAC/kish/internal/interfaces/http/dto"
+)
+
+type uploadFlags struct {
+	apiBase  string
+	envFile  string
+	result   string
+	scripts  []string
+	caseID   string
+	name     string
+	testType string
+}
+
+// uploadArtifact represents a single file to be uploaded to the artifact API.
+type uploadArtifact struct {
+	localPath    string
+	artifactName string // filepath.Base(localPath)
+	artifactType string // "environment" | "result" | "script"
+	content      string
+}
+
+// newUploadCmd constructs the `kish upload` cobra command.
+func newUploadCmd() *cobra.Command {
+	var flags uploadFlags
+
+	cmd := &cobra.Command{
+		Use:   "upload",
+		Short: "Upload files to a kish TestCase via the artifact API",
+		Long: `upload validates local files, ensures a TestCase exists, then uploads
+each file as a named artifact via PUT /api/v1/testcases/{case_id}/artifacts/{name}.
+
+Without --case-id, a new TestCase metadata record is created first and the
+generated case_id is printed before artifact uploads begin.
+
+With --case-id, the provided case_id is used directly. The artifact API returns
+404 if the case_id does not exist; no pre-flight existence check is performed.
+
+Examples:
+  kish upload --api http://127.0.0.1:30051 --env env.json --result result.txt
+  kish upload --api http://127.0.0.1:30051 --env env.json --result result.txt \
+              --script run.sh --name "sglang test" --type sglang-benchmark
+  kish upload --api http://127.0.0.1:30051 \
+              --case-id TC-20260505143022-a8f3 \
+              --env env.json --result result.txt --script run.sh`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runUpload(flags)
+		},
+	}
+
+	cmd.Flags().StringVar(&flags.apiBase, "api", "", "Base URL of the kish API server (required, e.g. http://127.0.0.1:30051)")
+	cmd.Flags().StringVar(&flags.envFile, "env", "", "Path to environment snapshot JSON (required)")
+	cmd.Flags().StringVar(&flags.result, "result", "", "Path to test result text file (required)")
+	cmd.Flags().StringArrayVar(&flags.scripts, "script", nil, "Path to a test script (repeatable)")
+	cmd.Flags().StringVar(&flags.caseID, "case-id", "", "Existing TestCase ID; when set, artifacts are uploaded to this case")
+	cmd.Flags().StringVar(&flags.name, "name", "", "Human-readable name for a newly created TestCase")
+	cmd.Flags().StringVar(&flags.testType, "type", "generic", "Test type for a newly created TestCase (e.g. sglang-benchmark)")
+
+	_ = cmd.MarkFlagRequired("api")
+	_ = cmd.MarkFlagRequired("env")
+	_ = cmd.MarkFlagRequired("result")
+
+	return cmd
+}
+
+// runUpload is the top-level upload workflow.
+//
+// Order of operations:
+//  1. Collect and validate all local files (no API calls yet).
+//  2. Resolve case_id (create metadata if --case-id is absent).
+//  3. Upload all artifacts via the unified PUT endpoint.
+func runUpload(flags uploadFlags) error {
+	artifacts, err := buildUploadArtifacts(flags)
+	if err != nil {
+		return err
+	}
+
+	caseID, created, err := ensureCaseID(flags)
+	if err != nil {
+		return err
+	}
+	if created {
+		fmt.Printf("created testcase: %s\n", caseID)
+	}
+
+	return uploadArtifacts(caseID, artifacts, flags.apiBase)
+}
+
+// buildUploadArtifacts reads and validates all local files, returning a list of
+// artifacts ready for upload. Validation failures are returned before any API call.
+func buildUploadArtifacts(flags uploadFlags) ([]uploadArtifact, error) {
+	var artifacts []uploadArtifact
+
+	// Environment snapshot: required, must be valid JSON, max 5 MB.
+	envContent, err := readTextFile(flags.envFile, 5*1024*1024)
+	if err != nil {
+		return nil, fmt.Errorf("--env: %w", err)
+	}
+	if !json.Valid([]byte(envContent)) {
+		return nil, fmt.Errorf("--env: file is not valid JSON: %s", flags.envFile)
+	}
+	artifacts = append(artifacts, uploadArtifact{
+		localPath:    flags.envFile,
+		artifactName: filepath.Base(flags.envFile),
+		artifactType: "environment",
+		content:      envContent,
+	})
+
+	// Test result: required, max 5 MB.
+	resultContent, err := readTextFile(flags.result, 5*1024*1024)
+	if err != nil {
+		return nil, fmt.Errorf("--result: %w", err)
+	}
+	artifacts = append(artifacts, uploadArtifact{
+		localPath:    flags.result,
+		artifactName: filepath.Base(flags.result),
+		artifactType: "result",
+		content:      resultContent,
+	})
+
+	// Scripts: optional, each max 1 MB.
+	for _, path := range flags.scripts {
+		content, err := readTextFile(path, 1*1024*1024)
+		if err != nil {
+			return nil, fmt.Errorf("--script %q: %w", path, err)
+		}
+		artifacts = append(artifacts, uploadArtifact{
+			localPath:    path,
+			artifactName: filepath.Base(path),
+			artifactType: "script",
+			content:      content,
+		})
+	}
+
+	return artifacts, nil
+}
+
+// ensureCaseID returns the case_id to use for artifact uploads.
+// If --case-id is provided it is returned directly. Otherwise a new TestCase
+// metadata record is created via POST /api/v1/testcases and the new ID is returned.
+// The boolean return value is true only when a new TestCase was created.
+func ensureCaseID(flags uploadFlags) (caseID string, created bool, err error) {
+	if flags.caseID != "" {
+		return flags.caseID, false, nil
+	}
+
+	apiBase := strings.TrimSuffix(flags.apiBase, "/")
+	url := apiBase + "/api/v1/testcases"
+
+	reqBody := dto.CreateTestCaseV1Request{
+		Name:     flags.name,
+		TestType: flags.testType,
+	}
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", false, fmt.Errorf("failed to encode create request: %w", err)
+	}
+
+	resp, err := http.Post(url, "application/json", bytes.NewReader(bodyBytes)) //nolint:noctx
+	if err != nil {
+		return "", false, fmt.Errorf("create testcase: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusCreated {
+		return "", false, fmt.Errorf("create testcase: server returned %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var out dto.CreateTestCaseResponse
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return "", false, fmt.Errorf("create testcase: failed to decode response: %w", err)
+	}
+	return out.CaseID, true, nil
+}
+
+// uploadArtifacts uploads each artifact to PUT /api/v1/testcases/{caseID}/artifacts/{name}.
+// All uploads share the same case_id regardless of whether it was newly created or provided.
+func uploadArtifacts(caseID string, artifacts []uploadArtifact, apiBase string) error {
+	base := strings.TrimSuffix(apiBase, "/")
+
+	for _, a := range artifacts {
+		url := fmt.Sprintf("%s/api/v1/testcases/%s/artifacts/%s", base, caseID, a.artifactName)
+		contentType := contentTypeForFile(a.artifactName)
+
+		req, err := http.NewRequest(http.MethodPut, url, strings.NewReader(a.content))
+		if err != nil {
+			return fmt.Errorf("build request for %q: %w", a.artifactName, err)
+		}
+		req.Header.Set("Content-Type", contentType)
+		req.Header.Set("X-Kish-Artifact-Type", a.artifactType)
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("upload %q: %w", a.artifactName, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("upload %q: server returned %d: %s", a.artifactName, resp.StatusCode, string(body))
+		}
+		fmt.Printf("uploaded artifact: %s (type=%s)\n", a.artifactName, a.artifactType)
+	}
+
+	fmt.Printf("artifacts uploaded to testcase: %s\n", caseID)
+	return nil
+}
+
+// readTextFile reads a file and returns its content as a string.
+// Returns an error if the file does not exist, is not readable, or exceeds maxBytes.
+func readTextFile(path string, maxBytes int64) (string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("file not found: %s", path)
+		}
+		return "", fmt.Errorf("cannot access %s: %w", path, err)
+	}
+	if info.Size() > maxBytes {
+		return "", fmt.Errorf("file %s exceeds maximum size of %d bytes", path, maxBytes)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("cannot read %s: %w", path, err)
+	}
+	return string(data), nil
+}
+
+// contentTypeForFile returns a best-effort content type based on file extension.
+func contentTypeForFile(name string) string {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".json":
+		return "application/json"
+	case ".txt", ".log":
+		return "text/plain"
+	case ".sh":
+		return "text/x-shellscript"
+	case ".yaml", ".yml":
+		return "application/yaml"
+	default:
+		return "application/octet-stream"
+	}
+}
