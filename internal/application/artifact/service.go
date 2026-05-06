@@ -151,6 +151,22 @@ func (s *Service) DeleteArtifact(ctx context.Context, caseID, artifactName strin
 	return s.artRepo.Delete(ctx, caseID, artifactName)
 }
 
+// CheckOwnership verifies that the TestCase identified by caseID is owned by ownerUserID.
+// Returns testcase.ErrNotFound if the TestCase does not exist.
+// Returns a non-nil error if the TestCase exists but belongs to a different user.
+// TestCases with an empty OwnerUserID (legacy, pre-ownership) are treated as
+// admin-only; this method returns an ownership error for non-owners.
+func (s *Service) CheckOwnership(ctx context.Context, caseID, ownerUserID string) error {
+	tc, err := s.tcRepo.FindByID(ctx, caseID)
+	if err != nil {
+		return err
+	}
+	if tc.OwnerUserID != ownerUserID {
+		return fmt.Errorf("testcase is not owned by user %q", ownerUserID)
+	}
+	return nil
+}
+
 // countingReader wraps an io.Reader and counts total bytes read.
 type countingReader struct {
 	r io.Reader

@@ -38,6 +38,13 @@ func Load(path string, overrides Overrides) (Config, error) {
 	v.SetDefault("limits.environment_snapshot_max_bytes", cfg.Limits.EnvironmentSnapshotMaxBytes)
 	v.SetDefault("storage.type", cfg.Storage.Type)
 	v.SetDefault("storage.local.root", cfg.Storage.Local.Root)
+	v.SetDefault("auth.access_token_ttl", cfg.Auth.AccessTokenTTL)
+	v.SetDefault("auth.refresh_token_ttl", cfg.Auth.RefreshTokenTTL)
+	v.SetDefault("auth.password_min_length", cfg.Auth.PasswordMinLength)
+	v.SetDefault("client_token.prefix", cfg.ClientToken.Prefix)
+	v.SetDefault("client_token.default_ttl", cfg.ClientToken.DefaultTTL)
+	v.SetDefault("client_token.allow_unlimited", cfg.ClientToken.AllowUnlimited)
+	v.SetDefault("bootstrap.enabled", cfg.Bootstrap.Enabled)
 
 	if path != "" {
 		v.SetConfigFile(path)

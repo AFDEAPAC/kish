@@ -101,14 +101,15 @@ func ensureIndexes(ctx context.Context, col *mongo.Collection) error {
 // environment_json stores the EnvironmentSnapshot as a JSON string to avoid
 // MongoDB's restriction on dotted keys in embedded documents.
 type testCaseDocument struct {
-	ID              string             `bson:"_id"`
-	Name            string             `bson:"name"`
-	TestType        string             `bson:"test_type"`
-	EnvironmentJSON string             `bson:"environment_json"`
+	ID              string                   `bson:"_id"`
+	Name            string                   `bson:"name"`
+	TestType        string                   `bson:"test_type"`
+	OwnerUserID     string                   `bson:"owner_user_id,omitempty"`
+	EnvironmentJSON string                   `bson:"environment_json"`
 	ResultArtifact  inlineArtifactDocument   `bson:"result_artifact"`
 	ScriptArtifacts []inlineArtifactDocument `bson:"script_artifacts"`
-	CreatedAt       time.Time          `bson:"created_at"`
-	UpdatedAt       time.Time          `bson:"updated_at"`
+	CreatedAt       time.Time                `bson:"created_at"`
+	UpdatedAt       time.Time                `bson:"updated_at"`
 }
 
 // inlineArtifactDocument is the BSON representation of a testcase.Artifact
@@ -139,6 +140,7 @@ func toDocument(tc *testcase.TestCase) (testCaseDocument, error) {
 		ID:              tc.ID,
 		Name:            tc.Name,
 		TestType:        tc.TestType,
+		OwnerUserID:     tc.OwnerUserID,
 		EnvironmentJSON: envJSON,
 		ResultArtifact:  toArtifactDocument(tc.ResultArtifact),
 		ScriptArtifacts: scripts,
@@ -195,6 +197,7 @@ func fromDocument(doc testCaseDocument) (*testcase.TestCase, error) {
 		ID:              doc.ID,
 		Name:            doc.Name,
 		TestType:        doc.TestType,
+		OwnerUserID:     doc.OwnerUserID,
 		Environment:     env,
 		ResultArtifact:  fromArtifactDocument(doc.ResultArtifact),
 		ScriptArtifacts: scripts,

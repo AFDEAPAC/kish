@@ -15,10 +15,12 @@ import (
 	domArtifact "github.com/AFDEAPAC/kish/internal/domain/artifact"
 	"github.com/AFDEAPAC/kish/internal/domain/environment"
 	"github.com/AFDEAPAC/kish/internal/domain/testcase"
+	"github.com/AFDEAPAC/kish/internal/domain/user"
 	"github.com/AFDEAPAC/kish/internal/infrastructure/storage"
 	infrahttp "github.com/AFDEAPAC/kish/internal/interfaces/http"
 	"github.com/AFDEAPAC/kish/internal/interfaces/http/dto"
 	"github.com/AFDEAPAC/kish/internal/interfaces/http/handler"
+	"github.com/AFDEAPAC/kish/internal/interfaces/http/middleware"
 )
 
 // --- shared fakes (same pattern as service_test.go) ---
@@ -116,6 +118,19 @@ func (s *artHandlerFakeStore) DeleteObject(_ context.Context, key string) error 
 	return nil
 }
 
+// adminPrincipalMiddleware injects an admin principal into every request context.
+// Used in tests to bypass the real auth middleware.
+func adminPrincipalMiddleware(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := middleware.Principal{
+			UserID:     "admin-test-user",
+			Role:       user.RoleAdmin,
+			AuthMethod: middleware.AuthMethodJWT,
+		}
+		h.ServeHTTP(w, r.WithContext(middleware.WithPrincipal(r.Context(), p)))
+	})
+}
+
 func newArtTestServer(tcIDs ...string) *httptest.Server {
 	tcRepo := newArtHandlerTCRepo(tcIDs...)
 	artRepo := newArtHandlerArtRepo()
@@ -127,8 +142,13 @@ func newArtTestServer(tcIDs ...string) *httptest.Server {
 		handler.NewHealthHandler(),
 		handler.NewTestCaseHandler(nil), // testcase handler not under test here
 		handler.NewArtifactHandler(artSvc),
+		handler.NewAuthHandler(nil, nil),
+		handler.NewUserHandler(nil),
+		handler.NewMeHandler(nil),
+		handler.NewClientTokenHandler(nil),
+		adminPrincipalMiddleware,
 	)
-	return httptest.NewServer(mux)
+	return httptest.NewServer(infrahttp.WrapWithAuth(mux, adminPrincipalMiddleware))
 }
 
 func TestArtifactPut_Success(t *testing.T) {

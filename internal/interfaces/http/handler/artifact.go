@@ -10,7 +10,9 @@ import (
 	appArtifact "github.com/AFDEAPAC/kish/internal/application/artifact"
 	domArtifact "github.com/AFDEAPAC/kish/internal/domain/artifact"
 	"github.com/AFDEAPAC/kish/internal/domain/testcase"
+	"github.com/AFDEAPAC/kish/internal/domain/user"
 	"github.com/AFDEAPAC/kish/internal/interfaces/http/dto"
+	"github.com/AFDEAPAC/kish/internal/interfaces/http/middleware"
 )
 
 // ArtifactHandler handles the /api/v1/testcases/{case_id}/artifacts/... endpoints.
@@ -52,13 +54,32 @@ func (h *ArtifactHandler) List(w http.ResponseWriter, r *http.Request) {
 //
 // The request body is the raw file content. Artifact type is read from the
 // X-Kish-Artifact-Type header; content type from the Content-Type header.
+// Requires authentication; developers may only upload to their own TestCases.
 func (h *ArtifactHandler) Put(w http.ResponseWriter, r *http.Request) {
+	p := middleware.PrincipalFromContext(r.Context())
+	if p.IsAnonymous {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
 	caseID := r.PathValue("case_id")
 	artifactName := r.PathValue("artifact_name")
 
 	if caseID == "" {
 		writeError(w, http.StatusBadRequest, "case_id is required")
 		return
+	}
+
+	// Enforce ownership for non-admin users: look up the TestCase owner before upload.
+	if p.Role != user.RoleAdmin {
+		if err := h.svc.CheckOwnership(r.Context(), caseID, p.UserID); err != nil {
+			if errors.Is(err, testcase.ErrNotFound) {
+				writeError(w, http.StatusNotFound, fmt.Sprintf("testcase %q not found", caseID))
+				return
+			}
+			writeError(w, http.StatusForbidden, "you do not own this testcase")
+			return
+		}
 	}
 
 	contentType := r.Header.Get("Content-Type")
@@ -130,13 +151,32 @@ func (h *ArtifactHandler) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 // Delete handles DELETE /api/v1/testcases/{case_id}/artifacts/{artifact_name}.
+// Requires authentication; developers may only delete artifacts from their own TestCases.
 func (h *ArtifactHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	p := middleware.PrincipalFromContext(r.Context())
+	if p.IsAnonymous {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
 	caseID := r.PathValue("case_id")
 	artifactName := r.PathValue("artifact_name")
 
 	if caseID == "" {
 		writeError(w, http.StatusBadRequest, "case_id is required")
 		return
+	}
+
+	// Enforce ownership for non-admin users.
+	if p.Role != user.RoleAdmin {
+		if err := h.svc.CheckOwnership(r.Context(), caseID, p.UserID); err != nil {
+			if errors.Is(err, testcase.ErrNotFound) {
+				writeError(w, http.StatusNotFound, fmt.Sprintf("testcase %q not found", caseID))
+				return
+			}
+			writeError(w, http.StatusForbidden, "you do not own this testcase")
+			return
+		}
 	}
 
 	if err := h.svc.DeleteArtifact(r.Context(), caseID, artifactName); err != nil {

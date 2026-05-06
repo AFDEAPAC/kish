@@ -150,7 +150,7 @@ func TestEnsureCaseID_WithCaseID_NoAPICalled(t *testing.T) {
 	defer srv.Close()
 
 	flags := uploadFlags{apiBase: srv.URL, caseID: "TC-existing"}
-	id, created, err := ensureCaseID(flags)
+	id, created, err := ensureCaseID(flags, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestEnsureCaseID_WithoutCaseID_CallsCreateEndpoint(t *testing.T) {
 	defer srv.Close()
 
 	flags := uploadFlags{apiBase: srv.URL, testType: "generic"}
-	id, created, err := ensureCaseID(flags)
+	id, created, err := ensureCaseID(flags, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -8,6 +8,7 @@ import (
 	apptestcase "github.com/AFDEAPAC/kish/internal/application/testcase"
 	"github.com/AFDEAPAC/kish/internal/domain/testcase"
 	"github.com/AFDEAPAC/kish/internal/interfaces/http/dto"
+	"github.com/AFDEAPAC/kish/internal/interfaces/http/middleware"
 )
 
 // TestCaseHandler handles TestCase HTTP endpoints.
@@ -25,7 +26,14 @@ func NewTestCaseHandler(svc *apptestcase.Service) *TestCaseHandler {
 // Creates a TestCase metadata record only. No artifact content is accepted here;
 // callers must upload files via PUT /api/v1/testcases/{case_id}/artifacts/{name}
 // after receiving the case_id from this response.
+// Requires authentication; the authenticated user becomes the owner.
 func (h *TestCaseHandler) CreateV1(w http.ResponseWriter, r *http.Request) {
+	p := middleware.PrincipalFromContext(r.Context())
+	if p.IsAnonymous {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
 	var req dto.CreateTestCaseV1Request
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
@@ -33,8 +41,9 @@ func (h *TestCaseHandler) CreateV1(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tc, err := h.svc.CreateMetadata(r.Context(), testcase.MetadataInput{
-		Name:     req.Name,
-		TestType: req.TestType,
+		Name:        req.Name,
+		TestType:    req.TestType,
+		OwnerUserID: p.UserID,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create testcase: "+err.Error())

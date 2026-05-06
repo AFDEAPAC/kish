@@ -52,6 +52,11 @@ type TestCase struct {
 	// TestType classifies the test (e.g. "sglang-benchmark", "generic").
 	TestType string `json:"test_type"`
 
+	// OwnerUserID is the ID of the user who created this TestCase.
+	// Empty for TestCases created before ownership was introduced.
+	// TestCases with no owner are treated as admin-only resources.
+	OwnerUserID string `json:"owner_user_id,omitempty"`
+
 	// Environment is present only on pre-artifact-API documents.
 	Environment *environment.EnvironmentSnapshot `json:"environment,omitempty"`
 
@@ -77,4 +82,8 @@ type MetadataInput struct {
 
 	// TestType classifies the test. Defaults to "generic" when empty.
 	TestType string
+
+	// OwnerUserID is the ID of the authenticated user creating this TestCase.
+	// Empty string is accepted for unauthenticated or pre-ownership uploads (legacy).
+	OwnerUserID string
 }

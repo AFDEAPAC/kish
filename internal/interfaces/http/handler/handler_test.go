@@ -11,9 +11,11 @@ import (
 
 	apptestcase "github.com/AFDEAPAC/kish/internal/application/testcase"
 	"github.com/AFDEAPAC/kish/internal/domain/testcase"
+	"github.com/AFDEAPAC/kish/internal/domain/user"
 	infrahttp "github.com/AFDEAPAC/kish/internal/interfaces/http"
 	"github.com/AFDEAPAC/kish/internal/interfaces/http/dto"
 	"github.com/AFDEAPAC/kish/internal/interfaces/http/handler"
+	"github.com/AFDEAPAC/kish/internal/interfaces/http/middleware"
 )
 
 // fakeRepo is a minimal in-memory repository for handler tests.
@@ -47,12 +49,33 @@ func (r *fakeRepo) FindByID(_ context.Context, id string) (*testcase.TestCase, e
 	return tc, nil
 }
 
+// testAdminMiddleware injects an admin principal so protected endpoints work in tests.
+func testAdminMiddleware(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := middleware.Principal{
+			UserID:     "test-admin",
+			Role:       user.RoleAdmin,
+			AuthMethod: middleware.AuthMethodJWT,
+		}
+		h.ServeHTTP(w, r.WithContext(middleware.WithPrincipal(r.Context(), p)))
+	})
+}
+
 func newTestServer() *httptest.Server {
 	repo := newFakeRepo()
 	svc := apptestcase.NewService(repo)
 	mux := http.NewServeMux()
-	infrahttp.RegisterRoutes(mux, handler.NewHealthHandler(), handler.NewTestCaseHandler(svc), handler.NewArtifactHandler(nil))
-	return httptest.NewServer(mux)
+	infrahttp.RegisterRoutes(mux,
+		handler.NewHealthHandler(),
+		handler.NewTestCaseHandler(svc),
+		handler.NewArtifactHandler(nil),
+		handler.NewAuthHandler(nil, nil),
+		handler.NewUserHandler(nil),
+		handler.NewMeHandler(nil),
+		handler.NewClientTokenHandler(nil),
+		testAdminMiddleware,
+	)
+	return httptest.NewServer(infrahttp.WrapWithAuth(mux, testAdminMiddleware))
 }
 
 func TestHealthz_ReturnsOK(t *testing.T) {

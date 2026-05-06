@@ -23,6 +23,7 @@ type uploadFlags struct {
 	caseID   string
 	name     string
 	testType string
+	token    string // --token flag; KISH_API_TOKEN env var is checked as fallback
 }
 
 // uploadArtifact represents a single file to be uploaded to the artifact API.
@@ -49,8 +50,15 @@ generated case_id is printed before artifact uploads begin.
 With --case-id, the provided case_id is used directly. The artifact API returns
 404 if the case_id does not exist; no pre-flight existence check is performed.
 
+Authentication:
+  Provide a client token via --token or the KISH_API_TOKEN environment variable.
+  --token takes priority over the environment variable.
+  When the server requires authentication and no token is provided, a clear error
+  is printed and the command exits non-zero.
+
 Examples:
-  kish upload --api http://127.0.0.1:30051 --env env.json --result result.txt
+  kish upload --api http://127.0.0.1:30051 --token kish_xxx --env env.json --result result.txt
+  export KISH_API_TOKEN=kish_xxx
   kish upload --api http://127.0.0.1:30051 --env env.json --result result.txt \
               --script run.sh --name "sglang test" --type sglang-benchmark
   kish upload --api http://127.0.0.1:30051 \
@@ -68,12 +76,24 @@ Examples:
 	cmd.Flags().StringVar(&flags.caseID, "case-id", "", "Existing TestCase ID; when set, artifacts are uploaded to this case")
 	cmd.Flags().StringVar(&flags.name, "name", "", "Human-readable name for a newly created TestCase")
 	cmd.Flags().StringVar(&flags.testType, "type", "generic", "Test type for a newly created TestCase (e.g. sglang-benchmark)")
+	cmd.Flags().StringVar(&flags.token, "token", "", "Client token for API authentication (overrides KISH_API_TOKEN)")
 
 	_ = cmd.MarkFlagRequired("api")
 	_ = cmd.MarkFlagRequired("env")
 	_ = cmd.MarkFlagRequired("result")
 
 	return cmd
+}
+
+// resolveToken returns the API token to use, following the priority order:
+// 1. --token flag
+// 2. KISH_API_TOKEN environment variable
+// Returns empty string if neither is set.
+func resolveToken(flags uploadFlags) string {
+	if flags.token != "" {
+		return flags.token
+	}
+	return os.Getenv("KISH_API_TOKEN")
 }
 
 // runUpload is the top-level upload workflow.
@@ -83,12 +103,14 @@ Examples:
 //  2. Resolve case_id (create metadata if --case-id is absent).
 //  3. Upload all artifacts via the unified PUT endpoint.
 func runUpload(flags uploadFlags) error {
+	token := resolveToken(flags)
+
 	artifacts, err := buildUploadArtifacts(flags)
 	if err != nil {
 		return err
 	}
 
-	caseID, created, err := ensureCaseID(flags)
+	caseID, created, err := ensureCaseID(flags, token)
 	if err != nil {
 		return err
 	}
@@ -96,7 +118,7 @@ func runUpload(flags uploadFlags) error {
 		fmt.Printf("created testcase: %s\n", caseID)
 	}
 
-	return uploadArtifacts(caseID, artifacts, flags.apiBase)
+	return uploadArtifacts(caseID, artifacts, flags.apiBase, token)
 }
 
 // buildUploadArtifacts reads and validates all local files, returning a list of
@@ -152,7 +174,7 @@ func buildUploadArtifacts(flags uploadFlags) ([]uploadArtifact, error) {
 // If --case-id is provided it is returned directly. Otherwise a new TestCase
 // metadata record is created via POST /api/v1/testcases and the new ID is returned.
 // The boolean return value is true only when a new TestCase was created.
-func ensureCaseID(flags uploadFlags) (caseID string, created bool, err error) {
+func ensureCaseID(flags uploadFlags, token string) (caseID string, created bool, err error) {
 	if flags.caseID != "" {
 		return flags.caseID, false, nil
 	}
@@ -169,14 +191,30 @@ func ensureCaseID(flags uploadFlags) (caseID string, created bool, err error) {
 		return "", false, fmt.Errorf("failed to encode create request: %w", err)
 	}
 
-	resp, err := http.Post(url, "application/json", bytes.NewReader(bodyBytes)) //nolint:noctx
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return "", false, fmt.Errorf("build create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", false, fmt.Errorf("create testcase: %w", err)
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
 
-	if resp.StatusCode != http.StatusCreated {
+	switch resp.StatusCode {
+	case http.StatusCreated:
+		// success, fall through
+	case http.StatusUnauthorized:
+		return "", false, fmt.Errorf("authentication required: provide --token or set KISH_API_TOKEN")
+	case http.StatusForbidden:
+		return "", false, fmt.Errorf("permission denied: your token does not have testcase:write scope")
+	default:
 		return "", false, fmt.Errorf("create testcase: server returned %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -189,7 +227,7 @@ func ensureCaseID(flags uploadFlags) (caseID string, created bool, err error) {
 
 // uploadArtifacts uploads each artifact to PUT /api/v1/testcases/{caseID}/artifacts/{name}.
 // All uploads share the same case_id regardless of whether it was newly created or provided.
-func uploadArtifacts(caseID string, artifacts []uploadArtifact, apiBase string) error {
+func uploadArtifacts(caseID string, artifacts []uploadArtifact, apiBase, token string) error {
 	base := strings.TrimSuffix(apiBase, "/")
 
 	for _, a := range artifacts {
@@ -202,6 +240,9 @@ func uploadArtifacts(caseID string, artifacts []uploadArtifact, apiBase string) 
 		}
 		req.Header.Set("Content-Type", contentType)
 		req.Header.Set("X-Kish-Artifact-Type", a.artifactType)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -210,7 +251,14 @@ func uploadArtifacts(caseID string, artifacts []uploadArtifact, apiBase string) 
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 
-		if resp.StatusCode != http.StatusOK {
+		switch resp.StatusCode {
+		case http.StatusOK:
+			// success
+		case http.StatusUnauthorized:
+			return fmt.Errorf("upload %q: authentication required — provide --token or set KISH_API_TOKEN", a.artifactName)
+		case http.StatusForbidden:
+			return fmt.Errorf("upload %q: permission denied — your token does not have testcase:write scope", a.artifactName)
+		default:
 			return fmt.Errorf("upload %q: server returned %d: %s", a.artifactName, resp.StatusCode, string(body))
 		}
 		fmt.Printf("uploaded artifact: %s (type=%s)\n", a.artifactName, a.artifactType)

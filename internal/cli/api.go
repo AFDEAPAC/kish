@@ -13,12 +13,18 @@ import (
 	"github.com/spf13/cobra"
 
 	appArtifact "github.com/AFDEAPAC/kish/internal/application/artifact"
+	appAuth "github.com/AFDEAPAC/kish/internal/application/auth"
+	appBootstrap "github.com/AFDEAPAC/kish/internal/application/bootstrap"
+	appClientToken "github.com/AFDEAPAC/kish/internal/application/clienttoken"
 	apptestcase "github.com/AFDEAPAC/kish/internal/application/testcase"
+	appUser "github.com/AFDEAPAC/kish/internal/application/user"
 	"github.com/AFDEAPAC/kish/internal/config"
 	"github.com/AFDEAPAC/kish/internal/infrastructure/mongodb"
+	"github.com/AFDEAPAC/kish/internal/infrastructure/security"
 	"github.com/AFDEAPAC/kish/internal/infrastructure/storage/local"
 	infrahttp "github.com/AFDEAPAC/kish/internal/interfaces/http"
 	"github.com/AFDEAPAC/kish/internal/interfaces/http/handler"
+	"github.com/AFDEAPAC/kish/internal/interfaces/http/middleware"
 )
 
 type apiFlags struct {
@@ -40,13 +46,27 @@ func newAPICmd() *cobra.Command {
 
 The server exposes:
   GET    /healthz
-  POST   /api/testcases
-  PUT    /api/testcases/{id}
-  GET    /api/testcases/{id}
+  POST   /api/auth/login
+  POST   /api/auth/refresh
+  POST   /api/auth/logout
+  GET    /api/auth/me
+  POST   /api/users               (admin)
+  GET    /api/users               (admin)
+  GET    /api/users/{user_id}     (admin)
+  PATCH  /api/users/{user_id}     (admin)
+  DELETE /api/users/{user_id}     (admin)
+  GET    /api/me
+  PATCH  /api/me
+  POST   /api/me/password
+  POST   /api/me/client-tokens
+  GET    /api/me/client-tokens
+  DELETE /api/me/client-tokens/{token_id}
+  POST   /api/v1/testcases        (authenticated)
+  GET    /api/testcases/{id}      (backward compat, public)
   GET    /api/v1/testcases/{case_id}/artifacts
-  PUT    /api/v1/testcases/{case_id}/artifacts/{artifact_name}
+  PUT    /api/v1/testcases/{case_id}/artifacts/{artifact_name}  (authenticated)
   GET    /api/v1/testcases/{case_id}/artifacts/{artifact_name}
-  DELETE /api/v1/testcases/{case_id}/artifacts/{artifact_name}
+  DELETE /api/v1/testcases/{case_id}/artifacts/{artifact_name}  (authenticated)
 
 Configuration is read from a YAML file. CLI flags override file values.
 
@@ -68,8 +88,8 @@ Examples:
 	return cmd
 }
 
-// runAPI loads config, connects to MongoDB, initialises storage, wires up the
-// HTTP server, and blocks until an OS signal or startup error causes shutdown.
+// runAPI loads config, connects to MongoDB, initialises all services, runs the
+// bootstrap flow, and starts the HTTP server.
 func runAPI(ctx context.Context, flags apiFlags) error {
 	cfg, err := config.Load(flags.configPath, config.Overrides{
 		Host:          flags.host,
@@ -84,8 +104,7 @@ func runAPI(ctx context.Context, flags apiFlags) error {
 		return fmt.Errorf("invalid config: %w", err)
 	}
 
-	// Initialise object store based on configured storage type.
-	// Only "local" is supported in this release; unknown types are rejected.
+	// Initialise object store.
 	log.Printf("[api] storage backend: %s", cfg.Storage.Type)
 	if cfg.Storage.Type != "local" && cfg.Storage.Type != "" {
 		return fmt.Errorf("unsupported storage.type %q; only \"local\" is supported", cfg.Storage.Type)
@@ -96,6 +115,7 @@ func runAPI(ctx context.Context, flags apiFlags) error {
 	}
 	log.Printf("[api] local storage root: %s", objStore.Root())
 
+	// Connect MongoDB.
 	log.Printf("[api] connecting to MongoDB at %s (db: %s)", cfg.MongoDB.URI, cfg.MongoDB.Database)
 	mongoClient, err := mongodb.Connect(ctx, cfg.MongoDB.URI, cfg.MongoDB.Database)
 	if err != nil {
@@ -109,27 +129,65 @@ func runAPI(ctx context.Context, flags apiFlags) error {
 		}
 	}()
 
+	// Initialise repositories.
 	tcRepo, err := mongodb.NewTestCaseRepository(ctx, mongoClient.DB())
 	if err != nil {
 		return fmt.Errorf("testcase repository init: %w", err)
 	}
-
 	artRepo, err := mongodb.NewArtifactRepository(ctx, mongoClient.DB())
 	if err != nil {
 		return fmt.Errorf("artifact repository init: %w", err)
 	}
+	userRepo, err := mongodb.NewUserRepository(ctx, mongoClient.DB())
+	if err != nil {
+		return fmt.Errorf("user repository init: %w", err)
+	}
+	sessionRepo, err := mongodb.NewSessionRepository(ctx, mongoClient.DB())
+	if err != nil {
+		return fmt.Errorf("session repository init: %w", err)
+	}
+	ctRepo, err := mongodb.NewClientTokenRepository(ctx, mongoClient.DB())
+	if err != nil {
+		return fmt.Errorf("client token repository init: %w", err)
+	}
 
+	// Initialise security infrastructure.
+	hasher := security.NewBcryptHasher()
+	jwtSvc := security.NewJWTService(cfg.Auth.JWTSecret, cfg.Auth.AccessTokenTTL)
+
+	// Initialise application services.
 	tcSvc := apptestcase.NewService(tcRepo)
 	artSvc := appArtifact.NewService(tcRepo, artRepo, objStore)
+	userSvc := appUser.NewService(userRepo, hasher, cfg.Auth.PasswordMinLength)
+	authSvc := appAuth.NewService(userRepo, sessionRepo, hasher, jwtSvc, cfg.Auth.RefreshTokenTTL)
+	ctSvc := appClientToken.NewService(ctRepo, cfg.ClientToken.Prefix)
+	bootstrapSvc := appBootstrap.NewService(userRepo, hasher, cfg.Bootstrap, cfg.Auth.PasswordMinLength)
 
+	// Bootstrap: create initial admin if none exists.
+	bootstrapSvc.Run(ctx)
+
+	// Initialise auth middleware.
+	authMW := middleware.Auth(jwtSvc, ctSvc, cfg.ClientToken.Prefix)
+
+	// Register routes.
 	mux := http.NewServeMux()
-	infrahttp.RegisterRoutes(mux,
+	infrahttp.RegisterRoutes(
+		mux,
 		handler.NewHealthHandler(),
 		handler.NewTestCaseHandler(tcSvc),
 		handler.NewArtifactHandler(artSvc),
+		handler.NewAuthHandler(authSvc, userSvc),
+		handler.NewUserHandler(userSvc),
+		handler.NewMeHandler(userSvc),
+		handler.NewClientTokenHandler(ctSvc),
+		authMW,
 	)
 
-	srv := infrahttp.NewServer(cfg.Server.Host, cfg.Server.Port, mux)
+	// Wrap the entire mux with the auth middleware so the principal is available
+	// on every request context before routing.
+	wrappedMux := infrahttp.WrapWithAuth(mux, authMW)
+
+	srv := infrahttp.NewServer(cfg.Server.Host, cfg.Server.Port, wrappedMux)
 
 	// Listen for OS signals to trigger graceful shutdown.
 	quit := make(chan os.Signal, 1)

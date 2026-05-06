@@ -42,11 +42,12 @@ func (s *Service) CreateMetadata(ctx context.Context, input testcase.MetadataInp
 	}
 
 	tc := &testcase.TestCase{
-		ID:        id,
-		Name:      input.Name,
-		TestType:  testType,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:          id,
+		Name:        input.Name,
+		TestType:    testType,
+		OwnerUserID: input.OwnerUserID,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 
 	if err := s.repo.Create(ctx, tc); err != nil {
