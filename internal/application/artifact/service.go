@@ -6,6 +6,7 @@
 package artifact
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	domartifact "github.com/AFDEAPAC/kish/internal/domain/artifact"
+	"github.com/AFDEAPAC/kish/internal/domain/environment"
 	"github.com/AFDEAPAC/kish/internal/domain/testcase"
 	"github.com/AFDEAPAC/kish/internal/infrastructure/storage"
 )
@@ -36,10 +38,11 @@ func NewService(tcRepo testcase.Repository, artRepo domartifact.Repository, stor
 // Workflow:
 //  1. Validate artifactName and artifactType.
 //  2. Verify the TestCase exists (returns testcase.ErrNotFound if not).
-//  3. Reject the upload when the TestCase is published and the artifact_type
-//     is `result` or `environment` (those are immutable after publish).
+//  3. Parse environment snapshots before writing so scope-specific publish
+//     immutability can be enforced.
 //  4. Stream r through a SHA-256 hasher while writing to the ObjectStore.
 //  5. Upsert the artifact metadata in the repository.
+//  6. Link canonical artifact types back to the TestCase aggregate state.
 func (s *Service) PutArtifact(
 	ctx context.Context,
 	caseID, artifactName, artifactType, contentType string,
@@ -66,7 +69,21 @@ func (s *Service) PutArtifact(
 	if err != nil {
 		return nil, err
 	}
-	if isImmutableOnPublished(artType) && tc.IsPublished() {
+
+	var envSnap *environment.EnvironmentSnapshot
+	if artType == domartifact.ArtifactTypeEnvironment {
+		data, err := io.ReadAll(r)
+		if err != nil {
+			return nil, fmt.Errorf("read environment artifact: %w", err)
+		}
+		envSnap, err = environment.ParseSnapshot(data)
+		if err != nil {
+			return nil, err
+		}
+		r = bytes.NewReader(data)
+	}
+
+	if tc.IsPublished() && !canWritePublishedArtifact(artType, envSnap) {
 		return nil, testcase.ErrPublishedImmutable
 	}
 
@@ -98,6 +115,10 @@ func (s *Service) PutArtifact(
 
 	if err := s.artRepo.Upsert(ctx, a); err != nil {
 		return nil, fmt.Errorf("save artifact metadata: %w", err)
+	}
+
+	if err := s.linkArtifactToTestCase(ctx, tc, a, envSnap); err != nil {
+		return nil, err
 	}
 	return a, nil
 }
@@ -170,12 +191,26 @@ func (s *Service) DeleteArtifact(ctx context.Context, caseID, artifactName strin
 	return s.artRepo.Delete(ctx, caseID, artifactName)
 }
 
-// isImmutableOnPublished reports whether artifacts of the given type cannot be
-// written once their parent TestCase is published.
+// canWritePublishedArtifact reports whether an artifact upload may mutate a
+// published TestCase. Result and execution environment artifacts are canonical
+// facts and remain frozen; supporting environments and scripts may be appended.
 //
-// Result and EnvironmentSnapshot artifacts represent the canonical record of
-// the test run and must stay byte-identical after publication. Scripts, logs,
-// raw, and other artifacts may continue to be appended on a published TestCase.
+// Environment artifacts must be parsed before this check so supporting
+// snapshots can be distinguished from the execution environment.
+func canWritePublishedArtifact(t domartifact.ArtifactType, envSnap *environment.EnvironmentSnapshot) bool {
+	switch t {
+	case domartifact.ArtifactTypeResult:
+		return false
+	case domartifact.ArtifactTypeEnvironment:
+		return envSnap != nil && envSnap.Scope == environment.ScopeSupporting
+	}
+	return true
+}
+
+// isImmutableOnPublished reports whether deleting a stored artifact is blocked
+// after publication. Deletes operate on existing metadata and do not include the
+// uploaded environment payload needed to distinguish execution from supporting,
+// so environment deletes remain conservative.
 func isImmutableOnPublished(t domartifact.ArtifactType) bool {
 	switch t {
 	case domartifact.ArtifactTypeResult, domartifact.ArtifactTypeEnvironment:
@@ -203,6 +238,55 @@ func (s *Service) CheckOwnership(ctx context.Context, caseID, ownerUserID string
 	}
 	if tc.OwnerUserID != ownerUserID {
 		return fmt.Errorf("testcase is not owned by user %q", ownerUserID)
+	}
+	return nil
+}
+
+func (s *Service) linkArtifactToTestCase(
+	ctx context.Context,
+	tc *testcase.TestCase,
+	a *domartifact.Artifact,
+	envSnap *environment.EnvironmentSnapshot,
+) error {
+	switch a.ArtifactType {
+	case domartifact.ArtifactTypeEnvironment:
+		if envSnap == nil {
+			return fmt.Errorf("%w: missing parsed environment snapshot", environment.ErrInvalidSnapshot)
+		}
+		tc.SetEnvironmentArtifact(testcase.EnvironmentArtifactRef{
+			Scope:           envSnap.Scope,
+			ArtifactName:    a.ArtifactName,
+			SchemaVersion:   envSnap.SchemaVersion,
+			EnvironmentType: envSnap.Type,
+			CollectedAt:     envSnap.CollectedAt,
+			ContentType:     a.ContentType,
+			Size:            a.Size,
+			SHA256:          a.SHA256,
+			UploadedAt:      a.UpdatedAt,
+		})
+	case domartifact.ArtifactTypeResult:
+		tc.SetTestResultArtifact(testcase.TestResultArtifactRef{
+			ArtifactName: a.ArtifactName,
+			ContentType:  a.ContentType,
+			Size:         a.Size,
+			SHA256:       a.SHA256,
+			UploadedAt:   a.UpdatedAt,
+		})
+	case domartifact.ArtifactTypeScript:
+		tc.UpsertTestScriptArtifact(testcase.TestScriptArtifactRef{
+			ArtifactName: a.ArtifactName,
+			ContentType:  a.ContentType,
+			Size:         a.Size,
+			SHA256:       a.SHA256,
+			UploadedAt:   a.UpdatedAt,
+		})
+	default:
+		return nil
+	}
+
+	tc.UpdatedAt = time.Now().UTC()
+	if err := s.tcRepo.Update(ctx, tc.ID, tc); err != nil {
+		return fmt.Errorf("link artifact to testcase: %w", err)
 	}
 	return nil
 }

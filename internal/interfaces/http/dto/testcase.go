@@ -70,23 +70,61 @@ type ArtifactResponse struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
+// EnvironmentArtifactRefResponse is the TestCase-level summary of an uploaded
+// EnvironmentSnapshot artifact. The raw JSON remains downloadable via the
+// Artifact API.
+type EnvironmentArtifactRefResponse struct {
+	Scope           string    `json:"scope"`
+	ArtifactName    string    `json:"artifact_name"`
+	SchemaVersion   string    `json:"schema_version,omitempty"`
+	EnvironmentType string    `json:"environment_type,omitempty"`
+	CollectedAt     time.Time `json:"collected_at,omitempty"`
+	ContentType     string    `json:"content_type,omitempty"`
+	Size            int64     `json:"size,omitempty"`
+	SHA256          string    `json:"checksum_sha256,omitempty"`
+	UploadedAt      time.Time `json:"uploaded_at,omitempty"`
+	IsDefault       bool      `json:"is_default"`
+}
+
+// TestResultArtifactRefResponse points to the current result artifact.
+type TestResultArtifactRefResponse struct {
+	ArtifactName string    `json:"artifact_name"`
+	ContentType  string    `json:"content_type,omitempty"`
+	Size         int64     `json:"size,omitempty"`
+	SHA256       string    `json:"checksum_sha256,omitempty"`
+	UploadedAt   time.Time `json:"uploaded_at,omitempty"`
+}
+
+// TestScriptArtifactRefResponse points to a script artifact associated with a TestCase.
+type TestScriptArtifactRefResponse struct {
+	ArtifactName string    `json:"artifact_name"`
+	ContentType  string    `json:"content_type,omitempty"`
+	Size         int64     `json:"size,omitempty"`
+	SHA256       string    `json:"checksum_sha256,omitempty"`
+	UploadedAt   time.Time `json:"uploaded_at,omitempty"`
+}
+
 // TestCaseResponse is the JSON body for GET /api/testcases/{id} and
 // GET /api/v1/testcases/{case_id}.
 type TestCaseResponse struct {
-	ID               string             `json:"id"`
-	Name             string             `json:"name,omitempty"`
-	Description      string             `json:"description,omitempty"`
-	TestType         string             `json:"test_type"`
-	Tags             []string           `json:"tags,omitempty"`
-	Status           string             `json:"status"`
-	Visibility       string             `json:"visibility"`
-	OwnerUserID      string             `json:"owner_user_id,omitempty"`
-	OwnerDisplayName string             `json:"owner_display_name,omitempty"`
-	Environment      interface{}        `json:"environment,omitempty"`
-	ResultArtifact   ArtifactResponse   `json:"result_artifact,omitempty"`
-	ScriptArtifacts  []ArtifactResponse `json:"script_artifacts,omitempty"`
-	CreatedAt        time.Time          `json:"created_at"`
-	UpdatedAt        time.Time          `json:"updated_at"`
+	ID                      string                           `json:"id"`
+	Name                    string                           `json:"name,omitempty"`
+	Description             string                           `json:"description,omitempty"`
+	TestType                string                           `json:"test_type"`
+	Tags                    []string                         `json:"tags,omitempty"`
+	Status                  string                           `json:"status"`
+	Visibility              string                           `json:"visibility"`
+	OwnerUserID             string                           `json:"owner_user_id,omitempty"`
+	OwnerDisplayName        string                           `json:"owner_display_name,omitempty"`
+	Environments            []EnvironmentArtifactRefResponse `json:"environments"`
+	DefaultEnvironmentScope string                           `json:"default_environment_scope,omitempty"`
+	TestResult              *TestResultArtifactRefResponse   `json:"test_result,omitempty"`
+	TestScripts             []TestScriptArtifactRefResponse  `json:"test_scripts"`
+	Environment             interface{}                      `json:"environment,omitempty"`
+	ResultArtifact          *ArtifactResponse                `json:"result_artifact,omitempty"`
+	ScriptArtifacts         []ArtifactResponse               `json:"script_artifacts,omitempty"`
+	CreatedAt               time.Time                        `json:"created_at"`
+	UpdatedAt               time.Time                        `json:"updated_at"`
 }
 
 // ListTestCasesResponse is the JSON body for GET /api/v1/testcases.

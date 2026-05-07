@@ -99,12 +99,51 @@ type Artifact struct {
 	CreatedAt   time.Time    `json:"created_at"`
 }
 
+// EnvironmentArtifactRef is the TestCase-level reference to an uploaded
+// EnvironmentSnapshot artifact. The raw JSON remains in the artifact store; this
+// summary lets TestCase detail reads expose environment identity without
+// scanning the artifact list.
+type EnvironmentArtifactRef struct {
+	Scope           environment.EnvironmentScope `json:"scope"`
+	ArtifactName    string                       `json:"artifact_name"`
+	SchemaVersion   string                       `json:"schema_version,omitempty"`
+	EnvironmentType environment.EnvironmentType  `json:"environment_type,omitempty"`
+	CollectedAt     time.Time                    `json:"collected_at,omitempty"`
+	ContentType     string                       `json:"content_type,omitempty"`
+	Size            int64                        `json:"size,omitempty"`
+	SHA256          string                       `json:"checksum_sha256,omitempty"`
+	UploadedAt      time.Time                    `json:"uploaded_at,omitempty"`
+}
+
+// TestResultArtifactRef is the current result artifact for a TestCase.
+// Replacing a result uploads a new artifact body and points this reference at
+// the latest artifact metadata; it never mutates raw content inline.
+type TestResultArtifactRef struct {
+	ArtifactName string    `json:"artifact_name"`
+	ContentType  string    `json:"content_type,omitempty"`
+	Size         int64     `json:"size,omitempty"`
+	SHA256       string    `json:"checksum_sha256,omitempty"`
+	UploadedAt   time.Time `json:"uploaded_at,omitempty"`
+}
+
+// TestScriptArtifactRef points at a script artifact associated with the run.
+// Multiple scripts may be attached; uploading the same artifact_name updates the
+// reference metadata rather than adding a duplicate entry.
+type TestScriptArtifactRef struct {
+	ArtifactName string    `json:"artifact_name"`
+	ContentType  string    `json:"content_type,omitempty"`
+	Size         int64     `json:"size,omitempty"`
+	SHA256       string    `json:"checksum_sha256,omitempty"`
+	UploadedAt   time.Time `json:"uploaded_at,omitempty"`
+}
+
 // TestCase is the aggregate root that represents a single test run.
 //
-// Starting from the artifact API, a TestCase holds only metadata; file content
-// is stored via the artifact ObjectStore and referenced through the artifact
-// metadata collection. The inline ResultArtifact / ScriptArtifacts fields may
-// be present on documents created before the artifact API was introduced.
+// Starting from the artifact API, a TestCase holds metadata plus first-class
+// references to canonical artifacts. File content is stored via the artifact
+// ObjectStore and referenced through the artifact metadata collection. The
+// inline ResultArtifact / ScriptArtifacts fields may be present on documents
+// created before the artifact API was introduced.
 type TestCase struct {
 	// ID is the server-generated unique identifier (format: TC-YYYYMMDDHHMMSS-xxxx).
 	ID string `json:"id"`
@@ -136,6 +175,19 @@ type TestCase struct {
 	// Environment is present only on pre-artifact-API documents.
 	Environment *environment.EnvironmentSnapshot `json:"environment,omitempty"`
 
+	// Environments are first-class references to uploaded environment snapshots.
+	Environments []EnvironmentArtifactRef `json:"environments,omitempty"`
+
+	// DefaultEnvironmentScope identifies the environment shown by default in
+	// detail views. It is set to execution when an execution snapshot exists.
+	DefaultEnvironmentScope environment.EnvironmentScope `json:"default_environment_scope,omitempty"`
+
+	// TestResult is the current result artifact reference for v1 uploads.
+	TestResult *TestResultArtifactRef `json:"test_result,omitempty"`
+
+	// TestScripts are script artifact references for v1 uploads.
+	TestScripts []TestScriptArtifactRef `json:"test_scripts,omitempty"`
+
 	// ResultArtifact is present only on pre-artifact-API documents.
 	ResultArtifact Artifact `json:"result_artifact,omitempty"`
 
@@ -159,6 +211,57 @@ func (t *TestCase) IsPublished() bool { return t.Status == StatusPublished }
 // Only published-public TestCases satisfy this predicate.
 func (t *TestCase) IsPubliclyReadable() bool {
 	return t.IsPublished() && t.Visibility == VisibilityPublic
+}
+
+// SetEnvironmentArtifact records or replaces the environment artifact reference
+// for its scope. Execution snapshots become the default environment because the
+// execution environment is the primary context for interpreting a result.
+func (t *TestCase) SetEnvironmentArtifact(ref EnvironmentArtifactRef) {
+	for i := range t.Environments {
+		if t.Environments[i].Scope == ref.Scope {
+			t.Environments[i] = ref
+			t.refreshDefaultEnvironmentScope()
+			return
+		}
+	}
+	t.Environments = append(t.Environments, ref)
+	t.refreshDefaultEnvironmentScope()
+}
+
+// SetTestResultArtifact records the current result artifact reference.
+func (t *TestCase) SetTestResultArtifact(ref TestResultArtifactRef) {
+	t.TestResult = &ref
+}
+
+// UpsertTestScriptArtifact appends a script reference or updates the existing
+// reference for the same artifact name.
+func (t *TestCase) UpsertTestScriptArtifact(ref TestScriptArtifactRef) {
+	for i := range t.TestScripts {
+		if t.TestScripts[i].ArtifactName == ref.ArtifactName {
+			t.TestScripts[i] = ref
+			return
+		}
+	}
+	t.TestScripts = append(t.TestScripts, ref)
+}
+
+// HasExecutionEnvironment reports whether the TestCase has a canonical
+// execution environment reference.
+func (t *TestCase) HasExecutionEnvironment() bool {
+	for _, ref := range t.Environments {
+		if ref.Scope == environment.ScopeExecution {
+			return true
+		}
+	}
+	return false
+}
+
+func (t *TestCase) refreshDefaultEnvironmentScope() {
+	if t.HasExecutionEnvironment() {
+		t.DefaultEnvironmentScope = environment.ScopeExecution
+		return
+	}
+	t.DefaultEnvironmentScope = ""
 }
 
 // MetadataInput carries the caller-supplied data for creating a new TestCase root.

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -160,6 +161,10 @@ func newSvc(tcIDs ...string) *appArtifact.Service {
 	return appArtifact.NewService(newFakeTCRepo(tcIDs...), newFakeArtRepo(), newFakeStore())
 }
 
+func validEnvJSON(scope string) string {
+	return fmt.Sprintf(`{"schema_version":%q,"scope":%q,"type":"container","collected_at":"2026-05-06T13:24:15Z","data":{}}`, environment.SchemaVersionV1, scope)
+}
+
 func TestPutArtifact_Success(t *testing.T) {
 	svc := newSvc("tc1")
 	a, err := svc.PutArtifact(context.Background(), "tc1", "result.txt", "result", "text/plain", strings.NewReader("output"), -1)
@@ -224,6 +229,81 @@ func TestPutArtifact_Overwrite_UpdatesMetadata(t *testing.T) {
 	// Size must reflect v2 content.
 	if a2.Size != int64(len("v2-longer")) {
 		t.Errorf("expected size=%d after overwrite, got %d", len("v2-longer"), a2.Size)
+	}
+}
+
+func TestPutArtifact_LinksEnvironmentResultAndScriptToTestCase(t *testing.T) {
+	tcRepo := newFakeTCRepo("tc1")
+	svc := appArtifact.NewService(tcRepo, newFakeArtRepo(), newFakeStore())
+
+	if _, err := svc.PutArtifact(context.Background(), "tc1", "env.json", "environment", "application/json", strings.NewReader(validEnvJSON("execution")), -1); err != nil {
+		t.Fatalf("put env: %v", err)
+	}
+	tc := tcRepo.cases["tc1"]
+	if len(tc.Environments) != 1 {
+		t.Fatalf("expected 1 environment ref, got %d", len(tc.Environments))
+	}
+	if tc.Environments[0].Scope != environment.ScopeExecution {
+		t.Errorf("expected execution scope, got %q", tc.Environments[0].Scope)
+	}
+	if tc.DefaultEnvironmentScope != environment.ScopeExecution {
+		t.Errorf("expected default execution scope, got %q", tc.DefaultEnvironmentScope)
+	}
+
+	if _, err := svc.PutArtifact(context.Background(), "tc1", "result.txt", "result", "text/plain", strings.NewReader("output"), -1); err != nil {
+		t.Fatalf("put result: %v", err)
+	}
+	if tcRepo.cases["tc1"].TestResult == nil || tcRepo.cases["tc1"].TestResult.ArtifactName != "result.txt" {
+		t.Fatalf("expected testcase result ref to point at result.txt")
+	}
+
+	if _, err := svc.PutArtifact(context.Background(), "tc1", "run.sh", "script", "text/x-shellscript", strings.NewReader("#!/bin/sh"), -1); err != nil {
+		t.Fatalf("put script: %v", err)
+	}
+	if len(tcRepo.cases["tc1"].TestScripts) != 1 || tcRepo.cases["tc1"].TestScripts[0].ArtifactName != "run.sh" {
+		t.Fatalf("expected testcase script ref to point at run.sh")
+	}
+}
+
+func TestPutArtifact_ReplacesEnvironmentByScope(t *testing.T) {
+	tcRepo := newFakeTCRepo("tc1")
+	svc := appArtifact.NewService(tcRepo, newFakeArtRepo(), newFakeStore())
+
+	_, _ = svc.PutArtifact(context.Background(), "tc1", "env-v1.json", "environment", "application/json", strings.NewReader(validEnvJSON("execution")), -1)
+	if _, err := svc.PutArtifact(context.Background(), "tc1", "env-v2.json", "environment", "application/json", strings.NewReader(validEnvJSON("execution")), -1); err != nil {
+		t.Fatalf("replace env: %v", err)
+	}
+	envs := tcRepo.cases["tc1"].Environments
+	if len(envs) != 1 {
+		t.Fatalf("expected replacement to keep 1 execution ref, got %d", len(envs))
+	}
+	if envs[0].ArtifactName != "env-v2.json" {
+		t.Errorf("expected env-v2.json, got %q", envs[0].ArtifactName)
+	}
+}
+
+func TestPutArtifact_AddsSupportingEnvironmentWithoutChangingDefault(t *testing.T) {
+	tcRepo := newFakeTCRepo("tc1")
+	svc := appArtifact.NewService(tcRepo, newFakeArtRepo(), newFakeStore())
+
+	_, _ = svc.PutArtifact(context.Background(), "tc1", "env.json", "environment", "application/json", strings.NewReader(validEnvJSON("execution")), -1)
+	if _, err := svc.PutArtifact(context.Background(), "tc1", "host.json", "environment", "application/json", strings.NewReader(validEnvJSON("supporting")), -1); err != nil {
+		t.Fatalf("put supporting env: %v", err)
+	}
+	tc := tcRepo.cases["tc1"]
+	if len(tc.Environments) != 2 {
+		t.Fatalf("expected execution + supporting refs, got %d", len(tc.Environments))
+	}
+	if tc.DefaultEnvironmentScope != environment.ScopeExecution {
+		t.Errorf("expected default to remain execution, got %q", tc.DefaultEnvironmentScope)
+	}
+}
+
+func TestPutArtifact_InvalidEnvironmentSnapshot(t *testing.T) {
+	svc := newSvc("tc1")
+	_, err := svc.PutArtifact(context.Background(), "tc1", "env.json", "environment", "application/json", strings.NewReader(`{"schema_version":"bad"}`), -1)
+	if !errors.Is(err, environment.ErrInvalidSnapshot) {
+		t.Fatalf("expected ErrInvalidSnapshot, got %v", err)
 	}
 }
 
@@ -301,9 +381,21 @@ func TestPutArtifact_PublishedResultImmutable(t *testing.T) {
 		t.Errorf("expected ErrPublishedImmutable for result on published, got %v", err)
 	}
 
-	_, err = svc.PutArtifact(context.Background(), "tc1", "env.json", "environment", "application/json", strings.NewReader("{}"), -1)
+	_, err = svc.PutArtifact(context.Background(), "tc1", "env.json", "environment", "application/json", strings.NewReader(validEnvJSON("execution")), -1)
 	if !errors.Is(err, testcase.ErrPublishedImmutable) {
 		t.Errorf("expected ErrPublishedImmutable for environment on published, got %v", err)
+	}
+}
+
+func TestPutArtifact_PublishedSupportingEnvironmentAllowed(t *testing.T) {
+	tcRepo := newFakeTCRepo("tc1")
+	tcRepo.cases["tc1"].Status = testcase.StatusPublished
+	tcRepo.cases["tc1"].Visibility = testcase.VisibilityPublic
+	svc := appArtifact.NewService(tcRepo, newFakeArtRepo(), newFakeStore())
+
+	_, err := svc.PutArtifact(context.Background(), "tc1", "host.json", "environment", "application/json", strings.NewReader(validEnvJSON("supporting")), -1)
+	if err != nil {
+		t.Errorf("expected supporting environment upload to succeed on published testcase, got %v", err)
 	}
 }
 

@@ -348,21 +348,71 @@ func toTestCaseResponse(tc *testcase.TestCase, ownerDisplayName string) dto.Test
 	for _, a := range tc.ScriptArtifacts {
 		scripts = append(scripts, toArtifactResponse(a))
 	}
+	envRefs := make([]dto.EnvironmentArtifactRefResponse, 0, len(tc.Environments))
+	for _, ref := range tc.Environments {
+		envRefs = append(envRefs, toEnvironmentArtifactRefResponse(ref, string(tc.DefaultEnvironmentScope)))
+	}
+	testScripts := make([]dto.TestScriptArtifactRefResponse, 0, len(tc.TestScripts))
+	for _, ref := range tc.TestScripts {
+		testScripts = append(testScripts, toTestScriptArtifactRefResponse(ref))
+	}
 	return dto.TestCaseResponse{
-		ID:               tc.ID,
-		Name:             tc.Name,
-		Description:      tc.Description,
-		TestType:         tc.TestType,
-		Tags:             tc.Tags,
-		Status:           string(tc.Status),
-		Visibility:       string(tc.Visibility),
-		OwnerUserID:      tc.OwnerUserID,
-		OwnerDisplayName: ownerDisplayName,
-		Environment:      tc.Environment,
-		ResultArtifact:   toArtifactResponse(tc.ResultArtifact),
-		ScriptArtifacts:  scripts,
-		CreatedAt:        tc.CreatedAt,
-		UpdatedAt:        tc.UpdatedAt,
+		ID:                      tc.ID,
+		Name:                    tc.Name,
+		Description:             tc.Description,
+		TestType:                tc.TestType,
+		Tags:                    tc.Tags,
+		Status:                  string(tc.Status),
+		Visibility:              string(tc.Visibility),
+		OwnerUserID:             tc.OwnerUserID,
+		OwnerDisplayName:        ownerDisplayName,
+		Environments:            envRefs,
+		DefaultEnvironmentScope: string(tc.DefaultEnvironmentScope),
+		TestResult:              toTestResultArtifactRefResponse(tc.TestResult),
+		TestScripts:             testScripts,
+		Environment:             tc.Environment,
+		ResultArtifact:          toLegacyArtifactResponse(tc.ResultArtifact),
+		ScriptArtifacts:         scripts,
+		CreatedAt:               tc.CreatedAt,
+		UpdatedAt:               tc.UpdatedAt,
+	}
+}
+
+func toEnvironmentArtifactRefResponse(ref testcase.EnvironmentArtifactRef, defaultScope string) dto.EnvironmentArtifactRefResponse {
+	return dto.EnvironmentArtifactRefResponse{
+		Scope:           string(ref.Scope),
+		ArtifactName:    ref.ArtifactName,
+		SchemaVersion:   ref.SchemaVersion,
+		EnvironmentType: string(ref.EnvironmentType),
+		CollectedAt:     ref.CollectedAt,
+		ContentType:     ref.ContentType,
+		Size:            ref.Size,
+		SHA256:          ref.SHA256,
+		UploadedAt:      ref.UploadedAt,
+		IsDefault:       string(ref.Scope) == defaultScope,
+	}
+}
+
+func toTestResultArtifactRefResponse(ref *testcase.TestResultArtifactRef) *dto.TestResultArtifactRefResponse {
+	if ref == nil {
+		return nil
+	}
+	return &dto.TestResultArtifactRefResponse{
+		ArtifactName: ref.ArtifactName,
+		ContentType:  ref.ContentType,
+		Size:         ref.Size,
+		SHA256:       ref.SHA256,
+		UploadedAt:   ref.UploadedAt,
+	}
+}
+
+func toTestScriptArtifactRefResponse(ref testcase.TestScriptArtifactRef) dto.TestScriptArtifactRefResponse {
+	return dto.TestScriptArtifactRefResponse{
+		ArtifactName: ref.ArtifactName,
+		ContentType:  ref.ContentType,
+		Size:         ref.Size,
+		SHA256:       ref.SHA256,
+		UploadedAt:   ref.UploadedAt,
 	}
 }
 
@@ -376,4 +426,12 @@ func toArtifactResponse(a testcase.Artifact) dto.ArtifactResponse {
 		Content:     a.Content,
 		CreatedAt:   a.CreatedAt,
 	}
+}
+
+func toLegacyArtifactResponse(a testcase.Artifact) *dto.ArtifactResponse {
+	if a.Type == "" && a.Filename == "" && a.ContentType == "" && a.SizeBytes == 0 && a.SHA256 == "" && a.Content == "" && a.CreatedAt.IsZero() {
+		return nil
+	}
+	out := toArtifactResponse(a)
+	return &out
 }

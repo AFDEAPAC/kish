@@ -328,19 +328,43 @@ func ensureIndexes(ctx context.Context, col *mongo.Collection) error {
 // status, visibility, description, and tags are written for new documents and
 // missing on legacy documents; fromDocument applies safe defaults for missing values.
 type testCaseDocument struct {
-	ID              string                   `bson:"_id"`
-	Name            string                   `bson:"name"`
-	Description     string                   `bson:"description,omitempty"`
-	TestType        string                   `bson:"test_type"`
-	Tags            []string                 `bson:"tags,omitempty"`
-	Status          string                   `bson:"status,omitempty"`
-	Visibility      string                   `bson:"visibility,omitempty"`
-	OwnerUserID     string                   `bson:"owner_user_id,omitempty"`
-	EnvironmentJSON string                   `bson:"environment_json"`
-	ResultArtifact  inlineArtifactDocument   `bson:"result_artifact"`
-	ScriptArtifacts []inlineArtifactDocument `bson:"script_artifacts"`
-	CreatedAt       time.Time                `bson:"created_at"`
-	UpdatedAt       time.Time                `bson:"updated_at"`
+	ID                      string                   `bson:"_id"`
+	Name                    string                   `bson:"name"`
+	Description             string                   `bson:"description,omitempty"`
+	TestType                string                   `bson:"test_type"`
+	Tags                    []string                 `bson:"tags,omitempty"`
+	Status                  string                   `bson:"status,omitempty"`
+	Visibility              string                   `bson:"visibility,omitempty"`
+	OwnerUserID             string                   `bson:"owner_user_id,omitempty"`
+	EnvironmentJSON         string                   `bson:"environment_json,omitempty"`
+	Environments            []environmentRefDocument `bson:"environments,omitempty"`
+	DefaultEnvironmentScope string                   `bson:"default_environment_scope,omitempty"`
+	TestResult              *artifactRefDocument     `bson:"test_result,omitempty"`
+	TestScripts             []artifactRefDocument    `bson:"test_scripts,omitempty"`
+	ResultArtifact          inlineArtifactDocument   `bson:"result_artifact,omitempty"`
+	ScriptArtifacts         []inlineArtifactDocument `bson:"script_artifacts,omitempty"`
+	CreatedAt               time.Time                `bson:"created_at"`
+	UpdatedAt               time.Time                `bson:"updated_at"`
+}
+
+type environmentRefDocument struct {
+	Scope           string    `bson:"scope"`
+	ArtifactName    string    `bson:"artifact_name"`
+	SchemaVersion   string    `bson:"schema_version,omitempty"`
+	EnvironmentType string    `bson:"environment_type,omitempty"`
+	CollectedAt     time.Time `bson:"collected_at,omitempty"`
+	ContentType     string    `bson:"content_type,omitempty"`
+	Size            int64     `bson:"size,omitempty"`
+	SHA256          string    `bson:"checksum_sha256,omitempty"`
+	UploadedAt      time.Time `bson:"uploaded_at,omitempty"`
+}
+
+type artifactRefDocument struct {
+	ArtifactName string    `bson:"artifact_name"`
+	ContentType  string    `bson:"content_type,omitempty"`
+	Size         int64     `bson:"size,omitempty"`
+	SHA256       string    `bson:"checksum_sha256,omitempty"`
+	UploadedAt   time.Time `bson:"uploaded_at,omitempty"`
 }
 
 // inlineArtifactDocument is the BSON representation of a testcase.Artifact
@@ -357,16 +381,6 @@ type inlineArtifactDocument struct {
 }
 
 func toDocument(tc *testcase.TestCase) (testCaseDocument, error) {
-	envJSON, err := marshalEnvJSON(tc.Environment)
-	if err != nil {
-		return testCaseDocument{}, err
-	}
-
-	scripts := make([]inlineArtifactDocument, 0, len(tc.ScriptArtifacts))
-	for _, a := range tc.ScriptArtifacts {
-		scripts = append(scripts, toArtifactDocument(a))
-	}
-
 	status := tc.Status
 	if status == "" {
 		status = testcase.StatusDraft
@@ -377,33 +391,24 @@ func toDocument(tc *testcase.TestCase) (testCaseDocument, error) {
 	}
 
 	return testCaseDocument{
-		ID:              tc.ID,
-		Name:            tc.Name,
-		Description:     tc.Description,
-		TestType:        tc.TestType,
-		Tags:            tc.Tags,
-		Status:          string(status),
-		Visibility:      string(visibility),
-		OwnerUserID:     tc.OwnerUserID,
-		EnvironmentJSON: envJSON,
-		ResultArtifact:  toArtifactDocument(tc.ResultArtifact),
-		ScriptArtifacts: scripts,
-		CreatedAt:       tc.CreatedAt,
-		UpdatedAt:       tc.UpdatedAt,
+		ID:                      tc.ID,
+		Name:                    tc.Name,
+		Description:             tc.Description,
+		TestType:                tc.TestType,
+		Tags:                    tc.Tags,
+		Status:                  string(status),
+		Visibility:              string(visibility),
+		OwnerUserID:             tc.OwnerUserID,
+		Environments:            toEnvironmentRefDocuments(tc.Environments),
+		DefaultEnvironmentScope: string(tc.DefaultEnvironmentScope),
+		TestResult:              toArtifactRefDocument(tc.TestResult),
+		TestScripts:             toScriptRefDocuments(tc.TestScripts),
+		CreatedAt:               tc.CreatedAt,
+		UpdatedAt:               tc.UpdatedAt,
 	}, nil
 }
 
 func toUpdateFields(tc *testcase.TestCase) (bson.D, error) {
-	envJSON, err := marshalEnvJSON(tc.Environment)
-	if err != nil {
-		return nil, err
-	}
-
-	scripts := make([]inlineArtifactDocument, 0, len(tc.ScriptArtifacts))
-	for _, a := range tc.ScriptArtifacts {
-		scripts = append(scripts, toArtifactDocument(a))
-	}
-
 	return bson.D{
 		{Key: "name", Value: tc.Name},
 		{Key: "description", Value: tc.Description},
@@ -411,11 +416,57 @@ func toUpdateFields(tc *testcase.TestCase) (bson.D, error) {
 		{Key: "tags", Value: tc.Tags},
 		{Key: "status", Value: string(tc.Status)},
 		{Key: "visibility", Value: string(tc.Visibility)},
-		{Key: "environment_json", Value: envJSON},
-		{Key: "result_artifact", Value: toArtifactDocument(tc.ResultArtifact)},
-		{Key: "script_artifacts", Value: scripts},
+		{Key: "environments", Value: toEnvironmentRefDocuments(tc.Environments)},
+		{Key: "default_environment_scope", Value: string(tc.DefaultEnvironmentScope)},
+		{Key: "test_result", Value: toArtifactRefDocument(tc.TestResult)},
+		{Key: "test_scripts", Value: toScriptRefDocuments(tc.TestScripts)},
 		{Key: "updated_at", Value: tc.UpdatedAt},
 	}, nil
+}
+
+func toEnvironmentRefDocuments(refs []testcase.EnvironmentArtifactRef) []environmentRefDocument {
+	out := make([]environmentRefDocument, 0, len(refs))
+	for _, ref := range refs {
+		out = append(out, environmentRefDocument{
+			Scope:           string(ref.Scope),
+			ArtifactName:    ref.ArtifactName,
+			SchemaVersion:   ref.SchemaVersion,
+			EnvironmentType: string(ref.EnvironmentType),
+			CollectedAt:     ref.CollectedAt,
+			ContentType:     ref.ContentType,
+			Size:            ref.Size,
+			SHA256:          ref.SHA256,
+			UploadedAt:      ref.UploadedAt,
+		})
+	}
+	return out
+}
+
+func toArtifactRefDocument(ref *testcase.TestResultArtifactRef) *artifactRefDocument {
+	if ref == nil {
+		return nil
+	}
+	return &artifactRefDocument{
+		ArtifactName: ref.ArtifactName,
+		ContentType:  ref.ContentType,
+		Size:         ref.Size,
+		SHA256:       ref.SHA256,
+		UploadedAt:   ref.UploadedAt,
+	}
+}
+
+func toScriptRefDocuments(refs []testcase.TestScriptArtifactRef) []artifactRefDocument {
+	out := make([]artifactRefDocument, 0, len(refs))
+	for _, ref := range refs {
+		out = append(out, artifactRefDocument{
+			ArtifactName: ref.ArtifactName,
+			ContentType:  ref.ContentType,
+			Size:         ref.Size,
+			SHA256:       ref.SHA256,
+			UploadedAt:   ref.UploadedAt,
+		})
+	}
+	return out
 }
 
 func toArtifactDocument(a testcase.Artifact) inlineArtifactDocument {
@@ -452,22 +503,85 @@ func fromDocument(doc testCaseDocument) (*testcase.TestCase, error) {
 	if !visibility.IsValid() {
 		visibility = testcase.VisibilityPrivate
 	}
+	envRefs := fromEnvironmentRefDocuments(doc.Environments)
+	defaultScope := environment.EnvironmentScope(doc.DefaultEnvironmentScope)
+	if defaultScope == "" {
+		for _, ref := range envRefs {
+			if ref.Scope == environment.ScopeExecution {
+				defaultScope = environment.ScopeExecution
+				break
+			}
+		}
+	}
 
 	return &testcase.TestCase{
-		ID:              doc.ID,
-		Name:            doc.Name,
-		Description:     doc.Description,
-		TestType:        doc.TestType,
-		Tags:            doc.Tags,
-		Status:          status,
-		Visibility:      visibility,
-		OwnerUserID:     doc.OwnerUserID,
-		Environment:     env,
-		ResultArtifact:  fromArtifactDocument(doc.ResultArtifact),
-		ScriptArtifacts: scripts,
-		CreatedAt:       doc.CreatedAt,
-		UpdatedAt:       doc.UpdatedAt,
+		ID:                      doc.ID,
+		Name:                    doc.Name,
+		Description:             doc.Description,
+		TestType:                doc.TestType,
+		Tags:                    doc.Tags,
+		Status:                  status,
+		Visibility:              visibility,
+		OwnerUserID:             doc.OwnerUserID,
+		Environment:             env,
+		Environments:            envRefs,
+		DefaultEnvironmentScope: defaultScope,
+		TestResult:              fromArtifactRefDocument(doc.TestResult),
+		TestScripts:             fromScriptRefDocuments(doc.TestScripts),
+		ResultArtifact:          fromArtifactDocument(doc.ResultArtifact),
+		ScriptArtifacts:         scripts,
+		CreatedAt:               doc.CreatedAt,
+		UpdatedAt:               doc.UpdatedAt,
 	}, nil
+}
+
+func fromEnvironmentRefDocuments(docs []environmentRefDocument) []testcase.EnvironmentArtifactRef {
+	out := make([]testcase.EnvironmentArtifactRef, 0, len(docs))
+	for _, doc := range docs {
+		scope, ok := environment.NormalizeEnvironmentScope(environment.EnvironmentScope(doc.Scope))
+		if !ok {
+			scope = environment.EnvironmentScope(doc.Scope)
+		}
+		out = append(out, testcase.EnvironmentArtifactRef{
+			Scope:           scope,
+			ArtifactName:    doc.ArtifactName,
+			SchemaVersion:   doc.SchemaVersion,
+			EnvironmentType: environment.EnvironmentType(doc.EnvironmentType),
+			CollectedAt:     doc.CollectedAt,
+			ContentType:     doc.ContentType,
+			Size:            doc.Size,
+			SHA256:          doc.SHA256,
+			UploadedAt:      doc.UploadedAt,
+		})
+	}
+	return out
+}
+
+func fromArtifactRefDocument(doc *artifactRefDocument) *testcase.TestResultArtifactRef {
+	if doc == nil {
+		return nil
+	}
+	return &testcase.TestResultArtifactRef{
+		ArtifactName: doc.ArtifactName,
+		ContentType:  doc.ContentType,
+		Size:         doc.Size,
+		SHA256:       doc.SHA256,
+		UploadedAt:   doc.UploadedAt,
+	}
+}
+
+func fromScriptRefDocuments(docs []artifactRefDocument) []testcase.TestScriptArtifactRef {
+	out := make([]testcase.TestScriptArtifactRef, 0, len(docs))
+	for _, doc := range docs {
+		out = append(out, testcase.TestScriptArtifactRef{
+			ArtifactName: doc.ArtifactName,
+			ContentType:  doc.ContentType,
+			Size:         doc.Size,
+			SHA256:       doc.SHA256,
+			UploadedAt:   doc.UploadedAt,
+		})
+	}
+	return out
 }
 
 func fromArtifactDocument(a inlineArtifactDocument) testcase.Artifact {

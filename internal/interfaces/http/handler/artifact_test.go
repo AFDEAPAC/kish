@@ -12,8 +12,8 @@ import (
 	"time"
 
 	appArtifact "github.com/AFDEAPAC/kish/internal/application/artifact"
+	apptestcase "github.com/AFDEAPAC/kish/internal/application/testcase"
 	domArtifact "github.com/AFDEAPAC/kish/internal/domain/artifact"
-	"github.com/AFDEAPAC/kish/internal/domain/environment"
 	"github.com/AFDEAPAC/kish/internal/domain/testcase"
 	"github.com/AFDEAPAC/kish/internal/domain/user"
 	"github.com/AFDEAPAC/kish/internal/infrastructure/storage"
@@ -33,13 +33,12 @@ func newArtHandlerTCRepo(ids ...string) *artHandlerFakeTCRepo {
 	r := &artHandlerFakeTCRepo{cases: make(map[string]*testcase.TestCase)}
 	for _, id := range ids {
 		r.cases[id] = &testcase.TestCase{
-			ID: id, TestType: "generic",
-			Status:         testcase.StatusDraft,
-			Visibility:     testcase.VisibilityPrivate,
-			Environment:    &environment.EnvironmentSnapshot{SchemaVersion: environment.SchemaVersionV1},
-			ResultArtifact: testcase.Artifact{Content: "x"},
-			CreatedAt:      time.Now(),
-			UpdatedAt:      time.Now(),
+			ID:         id,
+			TestType:   "generic",
+			Status:     testcase.StatusDraft,
+			Visibility: testcase.VisibilityPrivate,
+			CreatedAt:  time.Now(),
+			UpdatedAt:  time.Now(),
 		}
 	}
 	return r
@@ -48,10 +47,11 @@ func (r *artHandlerFakeTCRepo) Create(_ context.Context, tc *testcase.TestCase) 
 	r.cases[tc.ID] = tc
 	return nil
 }
-func (r *artHandlerFakeTCRepo) Update(_ context.Context, id string, _ *testcase.TestCase) error {
+func (r *artHandlerFakeTCRepo) Update(_ context.Context, id string, tc *testcase.TestCase) error {
 	if _, ok := r.cases[id]; !ok {
 		return testcase.ErrNotFound
 	}
+	r.cases[id] = tc
 	return nil
 }
 func (r *artHandlerFakeTCRepo) UpdatePartial(_ context.Context, id string, _ testcase.MetadataPatch) error {
@@ -169,11 +169,12 @@ func newArtTestServer(tcIDs ...string) *httptest.Server {
 	artRepo := newArtHandlerArtRepo()
 	objStore := newArtHandlerStore()
 	artSvc := appArtifact.NewService(tcRepo, artRepo, objStore)
+	tcSvc := apptestcase.NewService(tcRepo)
 
 	mux := http.NewServeMux()
 	infrahttp.RegisterRoutes(mux,
 		handler.NewHealthHandler(),
-		handler.NewTestCaseHandler(nil), // testcase handler not under test here
+		handler.NewTestCaseHandler(tcSvc),
 		handler.NewArtifactHandler(artSvc),
 		handler.NewAuthHandler(nil, nil),
 		handler.NewUserHandler(nil),
@@ -182,6 +183,10 @@ func newArtTestServer(tcIDs ...string) *httptest.Server {
 		adminPrincipalMiddleware,
 	)
 	return httptest.NewServer(infrahttp.WrapWithAuth(mux, adminPrincipalMiddleware))
+}
+
+func validHandlerEnvJSON(scope string) string {
+	return `{"schema_version":"environment-snapshot/v1","scope":"` + scope + `","type":"container","collected_at":"2026-05-06T13:24:15Z","data":{}}`
 }
 
 func TestArtifactPut_Success(t *testing.T) {
@@ -217,6 +222,66 @@ func TestArtifactPut_Success(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if strings.Contains(string(body), "storage_key") {
 		t.Error("response must not contain storage_key")
+	}
+}
+
+func TestArtifactPut_UpdatesTestCaseDetailRefs(t *testing.T) {
+	tcRepo := newArtHandlerTCRepo("tc1")
+	srv := newArtTestServerWithRepo(tcRepo)
+	defer srv.Close()
+
+	puts := []struct {
+		name        string
+		artifactTyp string
+		contentTyp  string
+		body        string
+	}{
+		{name: "env.json", artifactTyp: "environment", contentTyp: "application/json", body: validHandlerEnvJSON("execution")},
+		{name: "result.txt", artifactTyp: "result", contentTyp: "text/plain", body: "benchmark output"},
+		{name: "run.sh", artifactTyp: "script", contentTyp: "text/x-shellscript", body: "#!/bin/sh"},
+	}
+	for _, put := range puts {
+		req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/v1/testcases/tc1/artifacts/"+put.name, strings.NewReader(put.body))
+		req.Header.Set("Content-Type", put.contentTyp)
+		req.Header.Set("X-Kish-Artifact-Type", put.artifactTyp)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("PUT %s: expected 200, got %d", put.name, resp.StatusCode)
+		}
+	}
+
+	resp, err := http.Get(srv.URL + "/api/v1/testcases/tc1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("GET testcase: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(body), "result_artifact") || strings.Contains(string(body), "script_artifacts") {
+		t.Fatalf("response should not expose empty legacy artifact fields: %s", body)
+	}
+	var out dto.TestCaseResponse
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Environments) != 1 || out.Environments[0].ArtifactName != "env.json" {
+		t.Fatalf("expected environment ref for env.json, got %#v", out.Environments)
+	}
+	if out.DefaultEnvironmentScope != "execution" || !out.Environments[0].IsDefault {
+		t.Fatalf("expected execution default environment, got scope=%q refs=%#v", out.DefaultEnvironmentScope, out.Environments)
+	}
+	if out.TestResult == nil || out.TestResult.ArtifactName != "result.txt" {
+		t.Fatalf("expected result ref for result.txt, got %#v", out.TestResult)
+	}
+	if len(out.TestScripts) != 1 || out.TestScripts[0].ArtifactName != "run.sh" {
+		t.Fatalf("expected script ref for run.sh, got %#v", out.TestScripts)
 	}
 }
 
@@ -363,11 +428,12 @@ func newArtTestServerWithRepo(tcRepo *artHandlerFakeTCRepo) *httptest.Server {
 	artRepo := newArtHandlerArtRepo()
 	objStore := newArtHandlerStore()
 	artSvc := appArtifact.NewService(tcRepo, artRepo, objStore)
+	tcSvc := apptestcase.NewService(tcRepo)
 
 	mux := http.NewServeMux()
 	infrahttp.RegisterRoutes(mux,
 		handler.NewHealthHandler(),
-		handler.NewTestCaseHandler(nil),
+		handler.NewTestCaseHandler(tcSvc),
 		handler.NewArtifactHandler(artSvc),
 		handler.NewAuthHandler(nil, nil),
 		handler.NewUserHandler(nil),
@@ -431,11 +497,12 @@ func newArtTestServerAnonymous(tcRepo *artHandlerFakeTCRepo) *httptest.Server {
 	artRepo := newArtHandlerArtRepo()
 	objStore := newArtHandlerStore()
 	artSvc := appArtifact.NewService(tcRepo, artRepo, objStore)
+	tcSvc := apptestcase.NewService(tcRepo)
 
 	mux := http.NewServeMux()
 	infrahttp.RegisterRoutes(mux,
 		handler.NewHealthHandler(),
-		handler.NewTestCaseHandler(nil),
+		handler.NewTestCaseHandler(tcSvc),
 		handler.NewArtifactHandler(artSvc),
 		handler.NewAuthHandler(nil, nil),
 		handler.NewUserHandler(nil),

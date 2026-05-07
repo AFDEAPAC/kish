@@ -6,9 +6,11 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	appArtifact "github.com/AFDEAPAC/kish/internal/application/artifact"
 	domArtifact "github.com/AFDEAPAC/kish/internal/domain/artifact"
+	"github.com/AFDEAPAC/kish/internal/domain/environment"
 	"github.com/AFDEAPAC/kish/internal/domain/testcase"
 	"github.com/AFDEAPAC/kish/internal/domain/user"
 	"github.com/AFDEAPAC/kish/internal/interfaces/http/dto"
@@ -266,7 +268,9 @@ func isValidationError(err error) bool {
 	if errors.Is(err, domArtifact.ErrNotFound) || errors.Is(err, testcase.ErrNotFound) {
 		return false
 	}
-	// Application-layer validation errors do not wrap sentinel values.
-	// They are safe to return directly to the client.
-	return true
+	if errors.Is(err, environment.ErrInvalidSnapshot) {
+		return true
+	}
+	msg := err.Error()
+	return strings.HasPrefix(msg, "artifact_name ") || strings.HasPrefix(msg, "invalid artifact_type ")
 }

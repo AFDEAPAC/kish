@@ -236,6 +236,8 @@ func TestRunUpload_WithoutCaseID_CreatesAndUploads(t *testing.T) {
 
 	var postCalled atomic.Bool
 	var putNames []string
+	putTypes := make(map[string]string)
+	putContentTypes := make(map[string]string)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -248,6 +250,8 @@ func TestRunUpload_WithoutCaseID_CreatesAndUploads(t *testing.T) {
 		case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/api/v1/testcases/TC-test-123/artifacts/"):
 			name := filepath.Base(r.URL.Path)
 			putNames = append(putNames, name)
+			putTypes[name] = r.Header.Get("X-Kish-Artifact-Type")
+			putContentTypes[name] = r.Header.Get("Content-Type")
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			fmt.Fprintln(w, `{"artifact_name":"x"}`)
@@ -272,6 +276,18 @@ func TestRunUpload_WithoutCaseID_CreatesAndUploads(t *testing.T) {
 	}
 	if len(putNames) != 3 {
 		t.Errorf("expected 3 PUT artifact calls, got %d: %v", len(putNames), putNames)
+	}
+	if putTypes["env.json"] != "environment" {
+		t.Errorf("expected env artifact type header, got %q", putTypes["env.json"])
+	}
+	if putTypes["result.txt"] != "result" {
+		t.Errorf("expected result artifact type header, got %q", putTypes["result.txt"])
+	}
+	if putTypes["run.sh"] != "script" {
+		t.Errorf("expected script artifact type header, got %q", putTypes["run.sh"])
+	}
+	if putContentTypes["env.json"] != "application/json" {
+		t.Errorf("expected JSON content type for env, got %q", putContentTypes["env.json"])
 	}
 }
 
