@@ -43,6 +43,13 @@ type RevealResult struct {
 	RawToken string
 }
 
+// TokenDetail contains client token metadata plus the retrievable raw token
+// when encrypted token storage is available for that record.
+type TokenDetail struct {
+	Token    *clienttoken.ClientToken
+	RawToken *string
+}
+
 // Service provides client token management operations.
 type Service struct {
 	repo   clienttoken.Repository
@@ -114,6 +121,17 @@ func (s *Service) CreateToken(ctx context.Context, in CreateInput) (*CreateResul
 	return &CreateResult{Token: created, RawToken: rawToken}, nil
 }
 
+func (s *Service) rawTokenFor(t *clienttoken.ClientToken) *string {
+	if t.RevokedAt != nil || t.EncryptedToken == "" || s.cipher == nil {
+		return nil
+	}
+	raw, err := s.cipher.Decrypt(t.EncryptedToken)
+	if err != nil {
+		return nil
+	}
+	return &raw
+}
+
 // RevealToken returns the raw token for an owned, valid token created after
 // encrypted token storage was enabled.
 func (s *Service) RevealToken(ctx context.Context, tokenID, requestingUserID string) (*RevealResult, error) {
@@ -134,13 +152,18 @@ func (s *Service) RevealToken(ctx context.Context, tokenID, requestingUserID str
 	return &RevealResult{Token: t, RawToken: raw}, nil
 }
 
-// ListTokens returns all client tokens owned by the given user.
-func (s *Service) ListTokens(ctx context.Context, userID string) ([]*clienttoken.ClientToken, error) {
+// ListTokens returns all client tokens owned by the given user, including a raw
+// token value when the record has encrypted token storage available.
+func (s *Service) ListTokens(ctx context.Context, userID string) ([]TokenDetail, error) {
 	tokens, err := s.repo.ListByUserID(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("list tokens: %w", err)
 	}
-	return tokens, nil
+	out := make([]TokenDetail, 0, len(tokens))
+	for _, t := range tokens {
+		out = append(out, TokenDetail{Token: t, RawToken: s.rawTokenFor(t)})
+	}
+	return out, nil
 }
 
 // RevokeToken revokes the token identified by tokenID.
@@ -167,6 +190,11 @@ func (s *Service) LookupByRawToken(ctx context.Context, rawToken string) (*clien
 	}
 	if !t.IsValid(time.Now().UTC()) {
 		return nil, clienttoken.ErrNotFound
+	}
+	now := time.Now().UTC()
+	if err := s.repo.TouchLastUsed(ctx, t.ID, now); err == nil {
+		t.LastUsedAt = &now
+		t.UpdatedAt = now
 	}
 	return t, nil
 }

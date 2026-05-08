@@ -47,6 +47,16 @@ func (r *fakeMWCTRepo) ListByUserID(_ context.Context, _ string) ([]*clienttoken
 	return nil, nil
 }
 func (r *fakeMWCTRepo) Revoke(_ context.Context, _ string) error { return nil }
+func (r *fakeMWCTRepo) TouchLastUsed(_ context.Context, id string, usedAt time.Time) error {
+	for _, t := range r.tokens {
+		if t.ID == id {
+			t.LastUsedAt = &usedAt
+			t.UpdatedAt = usedAt
+			return nil
+		}
+	}
+	return clienttoken.ErrNotFound
+}
 
 // --- test helpers ---
 
@@ -160,6 +170,9 @@ func TestAuthMiddleware_ClientTokenParsed(t *testing.T) {
 	}
 	if p.AuthMethod != middleware.AuthMethodClientToken {
 		t.Errorf("expected auth_method=client_token, got: %v", p.AuthMethod)
+	}
+	if createResult.Token.LastUsedAt == nil {
+		t.Fatal("expected client token auth to update last_used_at")
 	}
 }
 

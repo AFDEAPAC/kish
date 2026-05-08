@@ -121,3 +121,20 @@ func (r *ClientTokenRepository) Revoke(ctx context.Context, id string) error {
 	}
 	return nil
 }
+
+// TouchLastUsed records the time a client token was successfully used.
+func (r *ClientTokenRepository) TouchLastUsed(ctx context.Context, id string, usedAt time.Time) error {
+	filter := bson.D{{Key: "_id", Value: id}}
+	update := bson.D{{Key: "$set", Value: bson.D{
+		{Key: "last_used_at", Value: usedAt},
+		{Key: "updated_at", Value: usedAt},
+	}}}
+	result, err := r.col.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return fmt.Errorf("client token touch last used: %w", err)
+	}
+	if result.MatchedCount == 0 {
+		return clienttoken.ErrNotFound
+	}
+	return nil
+}

@@ -3,6 +3,7 @@ package clienttoken
 import (
 	"context"
 	"errors"
+	"time"
 )
 
 // ErrNotFound is returned when a client token lookup finds no matching record.
@@ -27,4 +28,7 @@ type Repository interface {
 
 	// Revoke marks the client token identified by id as revoked.
 	Revoke(ctx context.Context, id string) error
+
+	// TouchLastUsed records a successful client-token authentication time.
+	TouchLastUsed(ctx context.Context, id string, usedAt time.Time) error
 }

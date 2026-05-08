@@ -35,6 +35,12 @@ func NewDetectionService(collectors []environment.Collector) *DetectionService {
 // The reporter receives progress events around each collector run.
 // Pass a NoopReporter to suppress all progress output.
 func (s *DetectionService) Detect(ctx context.Context, reporter Reporter) (*environment.EnvironmentSnapshot, error) {
+	return s.DetectWithScope(ctx, reporter, environment.ScopeExecution)
+}
+
+// DetectWithScope runs all collectors and assigns the provided canonical scope
+// to the produced EnvironmentSnapshot.
+func (s *DetectionService) DetectWithScope(ctx context.Context, reporter Reporter, scope environment.EnvironmentScope) (*environment.EnvironmentSnapshot, error) {
 	collectedAt := time.Now().UTC()
 
 	mergedData := make(map[string]string)
@@ -90,7 +96,7 @@ func (s *DetectionService) Detect(ctx context.Context, reporter Reporter) (*envi
 	snapshot := &environment.EnvironmentSnapshot{
 		SchemaVersion: environment.SchemaVersionV1,
 		KishVersion:   KishVersion,
-		Scope:         environment.ScopeExecution,
+		Scope:         scope,
 		Type:          envType,
 		CollectedAt:   collectedAt,
 		Data:          mergedData,

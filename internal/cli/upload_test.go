@@ -155,6 +155,22 @@ func TestResolveAPIBase_UsesEnvironmentFallback(t *testing.T) {
 	}
 }
 
+func TestResolveToken_UsesFlagFirst(t *testing.T) {
+	t.Setenv("KISH_API_TOKEN", "env-token")
+	got := resolveToken(uploadFlags{token: "flag-token"})
+	if got != "flag-token" {
+		t.Fatalf("expected flag token, got %q", got)
+	}
+}
+
+func TestResolveToken_UsesEnvironmentFallback(t *testing.T) {
+	t.Setenv("KISH_API_TOKEN", "env-token")
+	got := resolveToken(uploadFlags{})
+	if got != "env-token" {
+		t.Fatalf("expected env token, got %q", got)
+	}
+}
+
 func TestRunUpload_RequiresAPIBaseFromFlagOrEnv(t *testing.T) {
 	t.Setenv("KISH_API_URL", "")
 	dir := t.TempDir()

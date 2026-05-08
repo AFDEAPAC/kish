@@ -64,6 +64,15 @@ func (r *fakeCTRepo) Revoke(_ context.Context, id string) error {
 	t.RevokedAt = &now
 	return nil
 }
+func (r *fakeCTRepo) TouchLastUsed(_ context.Context, id string, usedAt time.Time) error {
+	t, ok := r.tokens[id]
+	if !ok {
+		return clienttoken.ErrNotFound
+	}
+	t.LastUsedAt = &usedAt
+	t.UpdatedAt = usedAt
+	return nil
+}
 
 // --- tests ---
 
@@ -207,6 +216,89 @@ func TestRevealToken_LegacyTokenUnavailable(t *testing.T) {
 	}
 }
 
+func TestListTokens_ReturnsRawTokenWhenEncrypted(t *testing.T) {
+	svc, _ := newRevealCTService()
+	result, err := svc.CreateToken(context.Background(), appClientToken.CreateInput{
+		UserID:    "usr1",
+		Name:      "test",
+		Scopes:    []clienttoken.Scope{clienttoken.ScopeTestCaseWrite},
+		Unlimited: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	details, err := svc.ListTokens(context.Background(), "usr1")
+	if err != nil {
+		t.Fatalf("list tokens: %v", err)
+	}
+	if len(details) != 1 {
+		t.Fatalf("expected 1 token, got %d", len(details))
+	}
+	if details[0].RawToken == nil || *details[0].RawToken != result.RawToken {
+		t.Fatalf("expected raw token in list response, got %#v", details[0].RawToken)
+	}
+	if details[0].Token.LastUsedAt != nil {
+		t.Fatalf("new token should not have last_used_at, got %v", details[0].Token.LastUsedAt)
+	}
+}
+
+func TestListTokens_LegacyTokenRawUnavailable(t *testing.T) {
+	svc, _ := newCTService()
+	if _, err := svc.CreateToken(context.Background(), appClientToken.CreateInput{
+		UserID:    "usr1",
+		Name:      "legacy",
+		Scopes:    []clienttoken.Scope{clienttoken.ScopeTestCaseWrite},
+		Unlimited: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	details, err := svc.ListTokens(context.Background(), "usr1")
+	if err != nil {
+		t.Fatalf("list tokens: %v", err)
+	}
+	if len(details) != 1 {
+		t.Fatalf("expected 1 token, got %d", len(details))
+	}
+	if details[0].RawToken != nil {
+		t.Fatalf("legacy token should not have retrievable raw token, got %q", *details[0].RawToken)
+	}
+}
+
+func TestListTokens_RevokedTokenRawUnavailable(t *testing.T) {
+	svc, _ := newRevealCTService()
+	result, err := svc.CreateToken(context.Background(), appClientToken.CreateInput{
+		UserID:    "usr1",
+		Name:      "revoked",
+		Scopes:    []clienttoken.Scope{clienttoken.ScopeTestCaseWrite},
+		Unlimited: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RevokeToken(context.Background(), result.Token.ID, "usr1"); err != nil {
+		t.Fatal(err)
+	}
+
+	details, err := svc.ListTokens(context.Background(), "usr1")
+	if err != nil {
+		t.Fatalf("list tokens: %v", err)
+	}
+	if len(details) != 1 {
+		t.Fatalf("expected 1 token, got %d", len(details))
+	}
+	if details[0].RawToken != nil {
+		t.Fatalf("revoked token should not expose raw token, got %q", *details[0].RawToken)
+	}
+	if details[0].Token.RevokedAt == nil {
+		t.Fatal("expected revoked token metadata to remain present")
+	}
+	if len(details[0].Token.Scopes) != 1 || details[0].Token.Scopes[0] != clienttoken.ScopeTestCaseWrite {
+		t.Fatalf("expected scopes to remain present, got %#v", details[0].Token.Scopes)
+	}
+}
+
 func TestCreateToken_InvalidScope(t *testing.T) {
 	svc, _ := newCTService()
 	_, err := svc.CreateToken(context.Background(), appClientToken.CreateInput{
@@ -291,5 +383,53 @@ func TestLookupByRawToken_ExpiredRejected(t *testing.T) {
 	_, err = svc.LookupByRawToken(context.Background(), result.RawToken)
 	if !errors.Is(err, clienttoken.ErrNotFound) {
 		t.Errorf("expected ErrNotFound for expired token, got: %v", err)
+	}
+	if result.Token.LastUsedAt != nil {
+		t.Fatalf("expired token must not update last_used_at, got %v", result.Token.LastUsedAt)
+	}
+}
+
+func TestLookupByRawToken_TouchesLastUsed(t *testing.T) {
+	svc, _ := newCTService()
+	result, err := svc.CreateToken(context.Background(), appClientToken.CreateInput{
+		UserID:    "usr1",
+		Name:      "test",
+		Scopes:    []clienttoken.Scope{clienttoken.ScopeTestCaseWrite},
+		Unlimited: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lookedUp, err := svc.LookupByRawToken(context.Background(), result.RawToken)
+	if err != nil {
+		t.Fatalf("lookup token: %v", err)
+	}
+	if lookedUp.LastUsedAt == nil {
+		t.Fatal("expected successful lookup to update last_used_at")
+	}
+}
+
+func TestLookupByRawToken_RevokedRejectedWithoutTouch(t *testing.T) {
+	svc, _ := newCTService()
+	result, err := svc.CreateToken(context.Background(), appClientToken.CreateInput{
+		UserID:    "usr1",
+		Name:      "test",
+		Scopes:    []clienttoken.Scope{clienttoken.ScopeTestCaseWrite},
+		Unlimited: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RevokeToken(context.Background(), result.Token.ID, "usr1"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = svc.LookupByRawToken(context.Background(), result.RawToken)
+	if !errors.Is(err, clienttoken.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for revoked token, got %v", err)
+	}
+	if result.Token.LastUsedAt != nil {
+		t.Fatalf("revoked token must not update last_used_at, got %v", result.Token.LastUsedAt)
 	}
 }

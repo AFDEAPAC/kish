@@ -31,6 +31,7 @@ type uploadArtifact struct {
 	localPath    string
 	artifactName string // filepath.Base(localPath)
 	artifactType string // "environment" | "result" | "script"
+	contentType  string // optional explicit MIME type; inferred from artifactName when empty
 	content      string
 }
 
@@ -92,10 +93,7 @@ Examples:
 // 2. KISH_API_TOKEN environment variable
 // Returns empty string if neither is set.
 func resolveToken(flags uploadFlags) string {
-	if flags.token != "" {
-		return flags.token
-	}
-	return os.Getenv("KISH_API_TOKEN")
+	return resolveTokenValue(flags.token)
 }
 
 // resolveAPIBase returns the API base URL to use, following the priority order:
@@ -103,10 +101,7 @@ func resolveToken(flags uploadFlags) string {
 // 2. KISH_API_URL environment variable
 // Returns empty string if neither is set.
 func resolveAPIBase(flags uploadFlags) string {
-	if flags.apiBase != "" {
-		return flags.apiBase
-	}
-	return os.Getenv("KISH_API_URL")
+	return resolveAPIBaseValue(flags.apiBase)
 }
 
 // runUpload is the top-level upload workflow.
@@ -246,44 +241,65 @@ func ensureCaseID(flags uploadFlags, token string) (caseID string, created bool,
 // uploadArtifacts uploads each artifact to PUT /api/v1/testcases/{caseID}/artifacts/{name}.
 // All uploads share the same case_id regardless of whether it was newly created or provided.
 func uploadArtifacts(caseID string, artifacts []uploadArtifact, apiBase, token string) error {
-	base := strings.TrimSuffix(apiBase, "/")
-
 	for _, a := range artifacts {
-		url := fmt.Sprintf("%s/api/v1/testcases/%s/artifacts/%s", base, caseID, a.artifactName)
-		contentType := contentTypeForFile(a.artifactName)
-
-		req, err := http.NewRequest(http.MethodPut, url, strings.NewReader(a.content))
-		if err != nil {
-			return fmt.Errorf("build request for %q: %w", a.artifactName, err)
-		}
-		req.Header.Set("Content-Type", contentType)
-		req.Header.Set("X-Kish-Artifact-Type", a.artifactType)
-		if token != "" {
-			req.Header.Set("Authorization", "Bearer "+token)
-		}
-
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return fmt.Errorf("upload %q: %w", a.artifactName, err)
-		}
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-
-		switch resp.StatusCode {
-		case http.StatusOK:
-			// success
-		case http.StatusUnauthorized:
-			return fmt.Errorf("upload %q: authentication required — provide --token or set KISH_API_TOKEN", a.artifactName)
-		case http.StatusForbidden:
-			return fmt.Errorf("upload %q: permission denied — your token does not have testcase:write scope", a.artifactName)
-		default:
-			return fmt.Errorf("upload %q: server returned %d: %s", a.artifactName, resp.StatusCode, string(body))
+		if err := uploadArtifactContent(caseID, a, apiBase, token); err != nil {
+			return err
 		}
 		fmt.Printf("uploaded artifact: %s (type=%s)\n", a.artifactName, a.artifactType)
 	}
 
 	fmt.Printf("artifacts uploaded to testcase: %s\n", caseID)
 	return nil
+}
+
+// uploadEnvironmentSnapshot uploads an in-memory EnvironmentSnapshot JSON
+// without requiring the caller to write a temporary file first.
+func uploadEnvironmentSnapshot(caseID, artifactName string, content []byte, apiBase, token string) error {
+	return uploadArtifactContent(caseID, uploadArtifact{
+		artifactName: artifactName,
+		artifactType: "environment",
+		contentType:  "application/json",
+		content:      string(content),
+	}, apiBase, token)
+}
+
+// uploadArtifactContent uploads one artifact body to the unified Artifact API.
+// CLI commands own user-facing progress output so this helper stays quiet.
+func uploadArtifactContent(caseID string, a uploadArtifact, apiBase, token string) error {
+	base := strings.TrimSuffix(apiBase, "/")
+	url := fmt.Sprintf("%s/api/v1/testcases/%s/artifacts/%s", base, caseID, a.artifactName)
+	contentType := a.contentType
+	if contentType == "" {
+		contentType = contentTypeForFile(a.artifactName)
+	}
+
+	req, err := http.NewRequest(http.MethodPut, url, strings.NewReader(a.content))
+	if err != nil {
+		return fmt.Errorf("build request for %q: %w", a.artifactName, err)
+	}
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("X-Kish-Artifact-Type", a.artifactType)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("upload %q: %w", a.artifactName, err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return nil
+	case http.StatusUnauthorized:
+		return fmt.Errorf("upload %q: authentication required — provide --token or set KISH_API_TOKEN", a.artifactName)
+	case http.StatusForbidden:
+		return fmt.Errorf("upload %q: permission denied — your token does not have testcase:write scope", a.artifactName)
+	default:
+		return fmt.Errorf("upload %q: server returned %d: %s", a.artifactName, resp.StatusCode, string(body))
+	}
 }
 
 // readTextFile reads a file and returns its content as a string.

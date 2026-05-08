@@ -93,8 +93,8 @@ func (h *ClientTokenHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := dto.ListClientTokensResponse{Tokens: make([]dto.ClientTokenMetaResponse, 0, len(tokens))}
-	for _, t := range tokens {
-		resp.Tokens = append(resp.Tokens, dto.ClientTokenMetaFromDomain(t))
+	for _, detail := range tokens {
+		resp.Tokens = append(resp.Tokens, dto.ClientTokenMetaFromDetail(detail))
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

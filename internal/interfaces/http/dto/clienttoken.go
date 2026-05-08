@@ -3,6 +3,7 @@ package dto
 import (
 	"time"
 
+	appClientToken "github.com/AFDEAPAC/kish/internal/application/clienttoken"
 	"github.com/AFDEAPAC/kish/internal/domain/clienttoken"
 )
 
@@ -27,11 +28,13 @@ type CreateClientTokenResponse struct {
 	CreatedAt   time.Time           `json:"created_at"`
 }
 
-// ClientTokenMetaResponse is the metadata-only representation of a client token.
-// The raw token is never included after creation.
+// ClientTokenMetaResponse is the list representation of a client token.
+// Token is null for legacy records that cannot be decrypted from encrypted
+// token storage.
 type ClientTokenMetaResponse struct {
 	ID          string              `json:"id"`
 	Name        string              `json:"name"`
+	Token       *string             `json:"token"`
 	TokenPrefix string              `json:"token_prefix"`
 	Scopes      []clienttoken.Scope `json:"scopes"`
 	ExpiresAt   *time.Time          `json:"expires_at,omitempty"`
@@ -76,11 +79,13 @@ func RevealClientTokenFromDomain(t *clienttoken.ClientToken, raw string) RevealC
 	}
 }
 
-// ClientTokenMetaFromDomain maps a domain ClientToken to the metadata DTO.
-func ClientTokenMetaFromDomain(t *clienttoken.ClientToken) ClientTokenMetaResponse {
+// ClientTokenMetaFromDetail maps an application token detail to the list DTO.
+func ClientTokenMetaFromDetail(detail appClientToken.TokenDetail) ClientTokenMetaResponse {
+	t := detail.Token
 	return ClientTokenMetaResponse{
 		ID:          t.ID,
 		Name:        t.Name,
+		Token:       detail.RawToken,
 		TokenPrefix: t.TokenPrefix,
 		Scopes:      t.Scopes,
 		ExpiresAt:   t.ExpiresAt,
