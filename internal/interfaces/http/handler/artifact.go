@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/AFDEAPAC/kish/internal/domain/environment"
 	"github.com/AFDEAPAC/kish/internal/domain/testcase"
 	"github.com/AFDEAPAC/kish/internal/domain/user"
+	"github.com/AFDEAPAC/kish/internal/infrastructure/storage"
 	"github.com/AFDEAPAC/kish/internal/interfaces/http/dto"
 	"github.com/AFDEAPAC/kish/internal/interfaces/http/middleware"
 )
@@ -116,7 +118,11 @@ func (h *ArtifactHandler) Put(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "result and execution-environment artifacts are immutable on published testcases")
 		case isValidationError(err):
 			writeError(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, storage.ErrInsufficientStorage):
+			log.Printf("[artifact] store failed case_id=%q artifact_name=%q: %v", caseID, artifactName, err)
+			writeError(w, http.StatusInsufficientStorage, "artifact storage is full")
 		default:
+			log.Printf("[artifact] store failed case_id=%q artifact_name=%q: %v", caseID, artifactName, err)
 			writeError(w, http.StatusInternalServerError, "failed to store artifact")
 		}
 		return
@@ -152,6 +158,7 @@ func (h *ArtifactHandler) Get(w http.ResponseWriter, r *http.Request) {
 		case isValidationError(err):
 			writeError(w, http.StatusBadRequest, err.Error())
 		default:
+			log.Printf("[artifact] retrieve failed case_id=%q artifact_name=%q: %v", caseID, artifactName, err)
 			writeError(w, http.StatusInternalServerError, "failed to retrieve artifact")
 		}
 		return
@@ -207,6 +214,7 @@ func (h *ArtifactHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		case isValidationError(err):
 			writeError(w, http.StatusBadRequest, err.Error())
 		default:
+			log.Printf("[artifact] delete failed case_id=%q artifact_name=%q: %v", caseID, artifactName, err)
 			writeError(w, http.StatusInternalServerError, "failed to delete artifact")
 		}
 		return

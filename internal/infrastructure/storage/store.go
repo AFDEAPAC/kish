@@ -15,6 +15,11 @@ import (
 // ErrObjectNotFound is returned when the requested storage key does not exist.
 var ErrObjectNotFound = errors.New("object not found")
 
+// ErrInsufficientStorage is returned when a backend cannot accept new object
+// content because disk space, bucket quota, or a provider free-space threshold
+// has been reached.
+var ErrInsufficientStorage = errors.New("insufficient storage")
+
 // ObjectInfo describes a stored object without reading its content.
 type ObjectInfo struct {
 	Key         string

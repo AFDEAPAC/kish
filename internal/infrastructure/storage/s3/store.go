@@ -2,10 +2,12 @@
 package s3
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 	"time"
 
@@ -14,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
+	smithyhttp "github.com/aws/smithy-go/transport/http"
 
 	"github.com/AFDEAPAC/kish/internal/infrastructure/storage"
 )
@@ -64,6 +67,9 @@ func New(ctx context.Context, opts Options) (*Store, error) {
 			o.BaseEndpoint = aws.String(opts.Endpoint)
 		}
 		o.UsePathStyle = opts.ForcePathStyle
+		// MinIO and other S3-compatible stores can reject SDK checksum trailers
+		// on simple PUT requests. Keep checksums only when S3 requires them.
+		o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
 	})
 	return NewWithClient(client, opts)
 }
@@ -84,7 +90,7 @@ func NewWithClient(client Client, opts Options) (*Store, error) {
 }
 
 // PutObject writes r to S3 under key, replacing any existing object.
-func (s *Store) PutObject(ctx context.Context, key string, r io.Reader, _ int64, contentType string) error {
+func (s *Store) PutObject(ctx context.Context, key string, r io.Reader, size int64, contentType string) error {
 	objectKey, err := s.objectKey(key)
 	if err != nil {
 		return err
@@ -92,16 +98,38 @@ func (s *Store) PutObject(ctx context.Context, key string, r io.Reader, _ int64,
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
-	_, err = s.client.PutObject(ctx, &awss3.PutObjectInput{
+	body, resolvedSize, err := seekableBody(r, size)
+	if err != nil {
+		return fmt.Errorf("prepare s3 body %q: %w", key, err)
+	}
+	input := &awss3.PutObjectInput{
 		Bucket:      aws.String(s.bucket),
 		Key:         aws.String(objectKey),
-		Body:        r,
+		Body:        body,
 		ContentType: aws.String(contentType),
-	})
+	}
+	if resolvedSize >= 0 {
+		input.ContentLength = aws.Int64(resolvedSize)
+	}
+	_, err = s.client.PutObject(ctx, input)
 	if err != nil {
+		if isInsufficientStorage(err) {
+			return fmt.Errorf("s3 put %q: %w: %v", key, storage.ErrInsufficientStorage, err)
+		}
 		return fmt.Errorf("s3 put %q: %w", key, err)
 	}
 	return nil
+}
+
+func seekableBody(r io.Reader, size int64) (io.Reader, int64, error) {
+	if _, ok := r.(io.Seeker); ok {
+		return r, size, nil
+	}
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, -1, err
+	}
+	return bytes.NewReader(data), int64(len(data)), nil
 }
 
 // GetObject retrieves an object stream and metadata from S3.
@@ -199,4 +227,19 @@ func isNotFound(err error) bool {
 		}
 	}
 	return false
+}
+
+func isInsufficientStorage(err error) bool {
+	if errors.Is(err, storage.ErrInsufficientStorage) {
+		return true
+	}
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		switch apiErr.ErrorCode() {
+		case "XMinioStorageFull":
+			return true
+		}
+	}
+	var responseErr *smithyhttp.ResponseError
+	return errors.As(err, &responseErr) && responseErr.HTTPStatusCode() == http.StatusInsufficientStorage
 }

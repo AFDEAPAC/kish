@@ -5,26 +5,43 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
+	smithyhttp "github.com/aws/smithy-go/transport/http"
 
 	"github.com/AFDEAPAC/kish/internal/infrastructure/storage"
 )
 
 type fakeClient struct {
-	putInput    *awss3.PutObjectInput
-	getInput    *awss3.GetObjectInput
-	deleteInput *awss3.DeleteObjectInput
-	getOutput   *awss3.GetObjectOutput
-	getErr      error
+	putInput             *awss3.PutObjectInput
+	getInput             *awss3.GetObjectInput
+	deleteInput          *awss3.DeleteObjectInput
+	getOutput            *awss3.GetObjectOutput
+	putErr               error
+	getErr               error
+	requireContentLength bool
+	requireSeekableBody  bool
 }
 
 func (c *fakeClient) PutObject(_ context.Context, in *awss3.PutObjectInput, _ ...func(*awss3.Options)) (*awss3.PutObjectOutput, error) {
 	c.putInput = in
+	if c.requireContentLength && in.ContentLength == nil {
+		return nil, errors.New("content-length required")
+	}
+	if c.requireSeekableBody {
+		if _, ok := in.Body.(io.Seeker); !ok {
+			return nil, errors.New("seekable body required")
+		}
+	}
+	if c.putErr != nil {
+		return nil, c.putErr
+	}
 	return &awss3.PutObjectOutput{}, nil
 }
 
@@ -59,6 +76,99 @@ func TestPutObjectUsesPrefixedKeyAndContentType(t *testing.T) {
 	}
 	if got := aws.ToString(client.putInput.ContentType); got != "text/plain" {
 		t.Fatalf("content-type = %q", got)
+	}
+	if got := aws.ToInt64(client.putInput.ContentLength); got != 5 {
+		t.Fatalf("content-length = %d", got)
+	}
+}
+
+func TestPutObjectSetsKnownContentLengthForCompatibleStores(t *testing.T) {
+	client := &fakeClient{requireContentLength: true}
+	store, err := NewWithClient(client, Options{Bucket: "bucket"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = store.PutObject(context.Background(), "testcases/tc1/artifacts/env.json", bytes.NewReader([]byte("hello")), 5, "application/json")
+	if err != nil {
+		t.Fatalf("expected known-size put to satisfy compatible store, got %v", err)
+	}
+	if got := aws.ToInt64(client.putInput.ContentLength); got != 5 {
+		t.Fatalf("content-length = %d", got)
+	}
+}
+
+func TestPutObjectBuffersNonSeekableBody(t *testing.T) {
+	client := &fakeClient{requireSeekableBody: true}
+	store, err := NewWithClient(client, Options{Bucket: "bucket"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = store.PutObject(context.Background(), "testcases/tc1/artifacts/env.json", bytes.NewBufferString("hello"), 5, "application/json")
+	if err != nil {
+		t.Fatalf("expected non-seekable body to be buffered, got %v", err)
+	}
+	if _, ok := client.putInput.Body.(io.Seeker); !ok {
+		t.Fatal("expected buffered body to be seekable")
+	}
+	if got := aws.ToInt64(client.putInput.ContentLength); got != 5 {
+		t.Fatalf("content-length = %d", got)
+	}
+}
+
+func TestPutObjectBuffersUnknownSizeBody(t *testing.T) {
+	client := &fakeClient{requireContentLength: true, requireSeekableBody: true}
+	store, err := NewWithClient(client, Options{Bucket: "bucket"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = store.PutObject(context.Background(), "testcases/tc1/artifacts/env.json", bytes.NewBufferString("hello"), -1, "application/json")
+	if err != nil {
+		t.Fatalf("expected unknown-size body to be buffered with resolved length, got %v", err)
+	}
+	if got := aws.ToInt64(client.putInput.ContentLength); got != 5 {
+		t.Fatalf("content-length = %d", got)
+	}
+	body, err := io.ReadAll(client.putInput.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "hello" {
+		t.Fatalf("body = %q", body)
+	}
+}
+
+func TestPutObjectMapsMinioStorageFull(t *testing.T) {
+	client := &fakeClient{putErr: &smithy.GenericAPIError{Code: "XMinioStorageFull", Message: "storage full"}}
+	store, err := NewWithClient(client, Options{Bucket: "bucket"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = store.PutObject(context.Background(), "testcases/tc1/artifacts/env.json", bytes.NewReader([]byte("hello")), 5, "application/json")
+	if !errors.Is(err, storage.ErrInsufficientStorage) {
+		t.Fatalf("expected ErrInsufficientStorage, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "XMinioStorageFull") {
+		t.Fatalf("expected original provider code in error, got %v", err)
+	}
+}
+
+func TestPutObjectMapsHTTPInsufficientStorage(t *testing.T) {
+	client := &fakeClient{putErr: &smithyhttp.ResponseError{
+		Response: &smithyhttp.Response{Response: &http.Response{StatusCode: http.StatusInsufficientStorage}},
+		Err:      &smithy.GenericAPIError{Code: "StorageFull", Message: "storage full"},
+	}}
+	store, err := NewWithClient(client, Options{Bucket: "bucket"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = store.PutObject(context.Background(), "testcases/tc1/artifacts/env.json", bytes.NewReader([]byte("hello")), 5, "application/json")
+	if !errors.Is(err, storage.ErrInsufficientStorage) {
+		t.Fatalf("expected ErrInsufficientStorage, got %v", err)
 	}
 }
 

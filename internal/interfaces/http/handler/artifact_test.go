@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -129,12 +131,16 @@ func (r *artHandlerFakeArtRepo) Delete(_ context.Context, caseID, name string) e
 
 type artHandlerFakeStore struct {
 	objects map[string][]byte
+	putErr  error
 }
 
 func newArtHandlerStore() *artHandlerFakeStore {
 	return &artHandlerFakeStore{objects: make(map[string][]byte)}
 }
 func (s *artHandlerFakeStore) PutObject(_ context.Context, key string, r io.Reader, _ int64, _ string) error {
+	if s.putErr != nil {
+		return s.putErr
+	}
 	data, _ := io.ReadAll(r)
 	s.objects[key] = data
 	return nil
@@ -168,6 +174,10 @@ func newArtTestServer(tcIDs ...string) *httptest.Server {
 	tcRepo := newArtHandlerTCRepo(tcIDs...)
 	artRepo := newArtHandlerArtRepo()
 	objStore := newArtHandlerStore()
+	return newArtTestServerWithDeps(tcRepo, artRepo, objStore)
+}
+
+func newArtTestServerWithDeps(tcRepo *artHandlerFakeTCRepo, artRepo *artHandlerFakeArtRepo, objStore storage.ObjectStore) *httptest.Server {
 	artSvc := appArtifact.NewService(tcRepo, artRepo, objStore)
 	tcSvc := apptestcase.NewService(tcRepo)
 
@@ -316,6 +326,86 @@ func TestArtifactPut_InvalidName(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("expected 400 for invalid name, got %d", resp.StatusCode)
+	}
+}
+
+func TestArtifactPut_StoreFailureLogsInternalError(t *testing.T) {
+	var logs bytes.Buffer
+	prevWriter := log.Writer()
+	prevFlags := log.Flags()
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+	defer func() {
+		log.SetOutput(prevWriter)
+		log.SetFlags(prevFlags)
+	}()
+
+	tcRepo := newArtHandlerTCRepo("tc1")
+	artRepo := newArtHandlerArtRepo()
+	objStore := newArtHandlerStore()
+	objStore.putErr = io.ErrUnexpectedEOF
+	srv := newArtTestServerWithDeps(tcRepo, artRepo, objStore)
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/v1/testcases/tc1/artifacts/result.txt", strings.NewReader("benchmark output"))
+	req.Header.Set("Content-Type", "text/plain")
+	req.Header.Set("X-Kish-Artifact-Type", "result")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "failed to store artifact") {
+		t.Fatalf("expected generic storage error response, got %s", body)
+	}
+	logText := logs.String()
+	if !strings.Contains(logText, `case_id="tc1"`) || !strings.Contains(logText, `artifact_name="result.txt"`) || !strings.Contains(logText, "unexpected EOF") {
+		t.Fatalf("expected diagnostic log with case, artifact, and cause; got %q", logText)
+	}
+}
+
+func TestArtifactPut_InsufficientStorageReturns507(t *testing.T) {
+	var logs bytes.Buffer
+	prevWriter := log.Writer()
+	prevFlags := log.Flags()
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+	defer func() {
+		log.SetOutput(prevWriter)
+		log.SetFlags(prevFlags)
+	}()
+
+	tcRepo := newArtHandlerTCRepo("tc1")
+	artRepo := newArtHandlerArtRepo()
+	objStore := newArtHandlerStore()
+	objStore.putErr = fmt.Errorf("minio capacity: %w", storage.ErrInsufficientStorage)
+	srv := newArtTestServerWithDeps(tcRepo, artRepo, objStore)
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/v1/testcases/tc1/artifacts/result.txt", strings.NewReader("benchmark output"))
+	req.Header.Set("Content-Type", "text/plain")
+	req.Header.Set("X-Kish-Artifact-Type", "result")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusInsufficientStorage {
+		t.Fatalf("expected 507, got %d: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "artifact storage is full") {
+		t.Fatalf("expected storage full response, got %s", body)
+	}
+	logText := logs.String()
+	if !strings.Contains(logText, `case_id="tc1"`) || !strings.Contains(logText, `artifact_name="result.txt"`) || !strings.Contains(logText, "insufficient storage") {
+		t.Fatalf("expected diagnostic log with case, artifact, and cause; got %q", logText)
 	}
 }
 
