@@ -13,6 +13,25 @@ server:
   # Default API port used by Kish backend and dashboard local development.
   port: 30151
 
+cors:
+  # Keep disabled when the dashboard reaches the API through the recommended
+  # same-origin nginx reverse proxy. Enable only for direct browser-to-API
+  # deployments where dashboard and API origins differ.
+  enabled: false
+  allowed_origins: []
+  allowed_methods:
+    - "GET"
+    - "POST"
+    - "PUT"
+    - "PATCH"
+    - "DELETE"
+    - "OPTIONS"
+  allowed_headers:
+    - "Authorization"
+    - "Content-Type"
+  # Do not use wildcard origins with credentials enabled.
+  allow_credentials: false
+
 mongodb:
   # MongoDB connection string.
   uri: "mongodb://localhost:27017"
@@ -57,6 +76,11 @@ storage:
   #   # runtime identity (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, IAM role).
   #   access_key_id: "${AWS_ACCESS_KEY_ID}"
   #   secret_access_key: "${AWS_SECRET_ACCESS_KEY}"
+  #   tls:
+  #     # Optional PEM bundle for private or enterprise CAs used by the endpoint.
+  #     ca_file: "/etc/kish/certs/s3-ca.crt"
+  #     # Lab/debug escape hatch only. Do not enable in production.
+  #     insecure_skip_verify: false
 
 auth:
   # Required for JWT access token signing. Replace this before running any

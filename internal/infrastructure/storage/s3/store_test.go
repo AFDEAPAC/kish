@@ -172,6 +172,25 @@ func TestPutObjectMapsHTTPInsufficientStorage(t *testing.T) {
 	}
 }
 
+func TestPutObjectAddsTLSVerificationHint(t *testing.T) {
+	client := &fakeClient{putErr: errors.New("tls: failed to verify certificate: x509: certificate signed by unknown authority")}
+	store, err := NewWithClient(client, Options{Bucket: "bucket"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = store.PutObject(context.Background(), "testcases/tc1/artifacts/env.json", bytes.NewReader([]byte("hello")), 5, "application/json")
+	if err == nil {
+		t.Fatal("expected tls verification error")
+	}
+	if !strings.Contains(err.Error(), "storage.s3.tls.ca_file") {
+		t.Fatalf("expected CA file hint, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "certificate signed by unknown authority") {
+		t.Fatalf("expected original tls error, got %v", err)
+	}
+}
+
 func TestGetObjectReturnsContentAndMetadata(t *testing.T) {
 	updatedAt := time.Date(2026, 5, 6, 10, 0, 0, 0, time.UTC)
 	client := &fakeClient{getOutput: &awss3.GetObjectOutput{

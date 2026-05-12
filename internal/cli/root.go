@@ -28,4 +28,5 @@ func init() {
 	rootCmd.AddCommand(newDetectCmd())
 	rootCmd.AddCommand(newAPICmd())
 	rootCmd.AddCommand(newUploadCmd())
+	rootCmd.AddCommand(newStorageCmd())
 }

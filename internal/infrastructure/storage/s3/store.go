@@ -4,6 +4,7 @@ package s3
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -30,6 +31,7 @@ type Options struct {
 	ForcePathStyle  bool
 	AccessKeyID     string
 	SecretAccessKey string
+	TLS             TLSOptions
 }
 
 // Client is the narrow subset of the AWS S3 client used by Store.
@@ -55,6 +57,11 @@ func New(ctx context.Context, opts Options) (*Store, error) {
 	loadOpts := []func(*awsconfig.LoadOptions) error{
 		awsconfig.WithRegion(opts.Region),
 	}
+	httpClient, err := NewHTTPClient(opts.TLS)
+	if err != nil {
+		return nil, fmt.Errorf("s3 tls: %w", err)
+	}
+	loadOpts = append(loadOpts, awsconfig.WithHTTPClient(httpClient))
 	if opts.AccessKeyID != "" || opts.SecretAccessKey != "" {
 		loadOpts = append(loadOpts, awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(opts.AccessKeyID, opts.SecretAccessKey, "")))
 	}
@@ -116,6 +123,9 @@ func (s *Store) PutObject(ctx context.Context, key string, r io.Reader, size int
 		if isInsufficientStorage(err) {
 			return fmt.Errorf("s3 put %q: %w: %v", key, storage.ErrInsufficientStorage, err)
 		}
+		if isTLSVerificationError(err) {
+			return fmt.Errorf("s3 tls verification failed while putting %q: configure storage.s3.tls.ca_file or ensure the image contains CA certificates: %w", key, err)
+		}
 		return fmt.Errorf("s3 put %q: %w", key, err)
 	}
 	return nil
@@ -146,6 +156,9 @@ func (s *Store) GetObject(ctx context.Context, key string) (io.ReadCloser, stora
 		if isNotFound(err) {
 			return nil, storage.ObjectInfo{}, storage.ErrObjectNotFound
 		}
+		if isTLSVerificationError(err) {
+			return nil, storage.ObjectInfo{}, fmt.Errorf("s3 tls verification failed while getting %q: configure storage.s3.tls.ca_file or ensure the image contains CA certificates: %w", key, err)
+		}
 		return nil, storage.ObjectInfo{}, fmt.Errorf("s3 get %q: %w", key, err)
 	}
 	info := storage.ObjectInfo{
@@ -171,6 +184,9 @@ func (s *Store) DeleteObject(ctx context.Context, key string) error {
 		Key:    aws.String(objectKey),
 	})
 	if err != nil {
+		if isTLSVerificationError(err) {
+			return fmt.Errorf("s3 tls verification failed while deleting %q: configure storage.s3.tls.ca_file or ensure the image contains CA certificates: %w", key, err)
+		}
 		return fmt.Errorf("s3 delete %q: %w", key, err)
 	}
 	return nil
@@ -242,4 +258,12 @@ func isInsufficientStorage(err error) bool {
 	}
 	var responseErr *smithyhttp.ResponseError
 	return errors.As(err, &responseErr) && responseErr.HTTPStatusCode() == http.StatusInsufficientStorage
+}
+
+func isTLSVerificationError(err error) bool {
+	var unknownAuthority x509.UnknownAuthorityError
+	if errors.As(err, &unknownAuthority) {
+		return true
+	}
+	return strings.Contains(err.Error(), "certificate signed by unknown authority")
 }

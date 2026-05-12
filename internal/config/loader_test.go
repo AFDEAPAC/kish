@@ -19,6 +19,15 @@ func TestLoad_DefaultsWithNoFile(t *testing.T) {
 	if cfg.MongoDB.URI == "" {
 		t.Error("expected default mongodb.uri to be set")
 	}
+	if cfg.CORS.Enabled {
+		t.Error("expected cors.enabled default to be false")
+	}
+	if len(cfg.CORS.AllowedMethods) == 0 {
+		t.Error("expected default CORS allowed methods")
+	}
+	if len(cfg.CORS.AllowedHeaders) == 0 {
+		t.Error("expected default CORS allowed headers")
+	}
 }
 
 func TestLoad_YAMLFile(t *testing.T) {
@@ -68,6 +77,9 @@ storage:
     force_path_style: true
     access_key_id: "minio"
     secret_access_key: "secret"
+    tls:
+      ca_file: "/etc/kish/certs/minio-ca.crt"
+      insecure_skip_verify: true
 `
 	if err := os.WriteFile(cfgPath, []byte(yamlContent), 0644); err != nil {
 		t.Fatal(err)
@@ -94,6 +106,12 @@ storage:
 	}
 	if !cfg.Storage.S3.ForcePathStyle {
 		t.Error("expected force_path_style=true")
+	}
+	if cfg.Storage.S3.TLS.CAFile != "/etc/kish/certs/minio-ca.crt" {
+		t.Errorf("unexpected s3 tls ca_file: %q", cfg.Storage.S3.TLS.CAFile)
+	}
+	if !cfg.Storage.S3.TLS.InsecureSkipVerify {
+		t.Error("expected s3 tls insecure_skip_verify=true")
 	}
 }
 
@@ -127,6 +145,48 @@ mongodb:
 	}
 	if cfg.MongoDB.Database != "overridedb" {
 		t.Errorf("expected CLI override database, got %q", cfg.MongoDB.Database)
+	}
+}
+
+func TestLoad_CORSConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "kish.yaml")
+	yamlContent := `
+cors:
+  enabled: true
+  allowed_origins:
+    - "http://dashboard.example:30150"
+  allowed_methods:
+    - "GET"
+    - "POST"
+    - "OPTIONS"
+  allowed_headers:
+    - "Authorization"
+    - "Content-Type"
+  allow_credentials: true
+`
+	if err := os.WriteFile(cfgPath, []byte(yamlContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load(cfgPath, config.Overrides{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.CORS.Enabled {
+		t.Fatal("expected cors.enabled=true")
+	}
+	if got := cfg.CORS.AllowedOrigins; len(got) != 1 || got[0] != "http://dashboard.example:30150" {
+		t.Fatalf("unexpected cors.allowed_origins: %#v", got)
+	}
+	if got := cfg.CORS.AllowedMethods; len(got) != 3 || got[1] != "POST" {
+		t.Fatalf("unexpected cors.allowed_methods: %#v", got)
+	}
+	if got := cfg.CORS.AllowedHeaders; len(got) != 2 || got[0] != "Authorization" {
+		t.Fatalf("unexpected cors.allowed_headers: %#v", got)
+	}
+	if !cfg.CORS.AllowCredentials {
+		t.Fatal("expected cors.allow_credentials=true")
 	}
 }
 

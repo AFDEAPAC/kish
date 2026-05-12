@@ -15,12 +15,33 @@ type Config struct {
 	Auth        AuthConfig        `mapstructure:"auth"`
 	ClientToken ClientTokenConfig `mapstructure:"client_token"`
 	Bootstrap   BootstrapConfig   `mapstructure:"bootstrap"`
+	CORS        CORSConfig        `mapstructure:"cors"`
 }
 
 // ServerConfig holds HTTP server bind settings.
 type ServerConfig struct {
 	Host string `mapstructure:"host"`
 	Port int    `mapstructure:"port"`
+}
+
+// CORSConfig controls optional browser cross-origin access to the API.
+// It should remain disabled for the default same-origin reverse proxy mode.
+type CORSConfig struct {
+	// Enabled turns on CORS response headers and preflight handling.
+	Enabled bool `mapstructure:"enabled"`
+
+	// AllowedOrigins lists exact browser origins allowed to call the API.
+	// Do not use "*" with AllowCredentials.
+	AllowedOrigins []string `mapstructure:"allowed_origins"`
+
+	// AllowedMethods lists methods accepted in preflight responses.
+	AllowedMethods []string `mapstructure:"allowed_methods"`
+
+	// AllowedHeaders lists request headers accepted in preflight responses.
+	AllowedHeaders []string `mapstructure:"allowed_headers"`
+
+	// AllowCredentials enables Access-Control-Allow-Credentials for matched origins.
+	AllowCredentials bool `mapstructure:"allow_credentials"`
 }
 
 // MongoDBConfig holds MongoDB connection settings.
@@ -72,6 +93,19 @@ type StorageS3Config struct {
 	// When empty, the AWS SDK default credential chain is used.
 	AccessKeyID     string `mapstructure:"access_key_id"`
 	SecretAccessKey string `mapstructure:"secret_access_key"`
+
+	// TLS controls certificate trust for HTTPS S3-compatible endpoints.
+	TLS S3TLSConfig `mapstructure:"tls"`
+}
+
+// S3TLSConfig holds optional TLS trust settings for S3-compatible storage.
+type S3TLSConfig struct {
+	// CAFile points to a PEM bundle appended to the system trust store.
+	CAFile string `mapstructure:"ca_file"`
+
+	// InsecureSkipVerify disables S3 TLS certificate verification.
+	// Use only for isolated lab debugging; never enable in production.
+	InsecureSkipVerify bool `mapstructure:"insecure_skip_verify"`
 }
 
 // AuthConfig holds JWT and password settings for the API server.
@@ -166,6 +200,22 @@ func DefaultConfig() Config {
 		},
 		Bootstrap: BootstrapConfig{
 			Enabled: false,
+		},
+		CORS: CORSConfig{
+			Enabled: false,
+			AllowedMethods: []string{
+				"GET",
+				"POST",
+				"PUT",
+				"PATCH",
+				"DELETE",
+				"OPTIONS",
+			},
+			AllowedHeaders: []string{
+				"Authorization",
+				"Content-Type",
+			},
+			AllowCredentials: false,
 		},
 	}
 }

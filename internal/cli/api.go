@@ -105,6 +105,9 @@ func newObjectStore(ctx context.Context, cfg config.StorageConfig) (storage.Obje
 		log.Printf("[api] local storage root: %s", objStore.Root())
 		return objStore, nil
 	case "s3":
+		if cfg.S3.TLS.InsecureSkipVerify {
+			log.Printf("[api] WARNING: storage.s3.tls.insecure_skip_verify is enabled. TLS certificate verification is disabled for S3 storage. Do not use this in production.")
+		}
 		objStore, err := s3store.New(ctx, s3store.Options{
 			Bucket:          cfg.S3.Bucket,
 			Region:          cfg.S3.Region,
@@ -113,6 +116,10 @@ func newObjectStore(ctx context.Context, cfg config.StorageConfig) (storage.Obje
 			ForcePathStyle:  cfg.S3.ForcePathStyle,
 			AccessKeyID:     cfg.S3.AccessKeyID,
 			SecretAccessKey: cfg.S3.SecretAccessKey,
+			TLS: s3store.TLSOptions{
+				CAFile:             cfg.S3.TLS.CAFile,
+				InsecureSkipVerify: cfg.S3.TLS.InsecureSkipVerify,
+			},
 		})
 		if err != nil {
 			return nil, fmt.Errorf("s3 storage: %w", err)
@@ -230,7 +237,7 @@ func runAPI(ctx context.Context, flags apiFlags) error {
 
 	// Wrap the entire mux with the auth middleware so the principal is available
 	// on every request context before routing.
-	wrappedMux := infrahttp.WrapWithAuth(mux, authMW)
+	wrappedMux := middleware.CORS(cfg.CORS)(infrahttp.WrapWithAuth(mux, authMW))
 
 	srv := infrahttp.NewServer(cfg.Server.Host, cfg.Server.Port, wrappedMux)
 

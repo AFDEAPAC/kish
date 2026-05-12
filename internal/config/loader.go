@@ -40,6 +40,8 @@ func Load(path string, overrides Overrides) (Config, error) {
 	v.SetDefault("storage.local.root", cfg.Storage.Local.Root)
 	v.SetDefault("storage.s3.region", cfg.Storage.S3.Region)
 	v.SetDefault("storage.s3.force_path_style", cfg.Storage.S3.ForcePathStyle)
+	v.SetDefault("storage.s3.tls.ca_file", cfg.Storage.S3.TLS.CAFile)
+	v.SetDefault("storage.s3.tls.insecure_skip_verify", cfg.Storage.S3.TLS.InsecureSkipVerify)
 	v.SetDefault("auth.access_token_ttl", cfg.Auth.AccessTokenTTL)
 	v.SetDefault("auth.refresh_token_ttl", cfg.Auth.RefreshTokenTTL)
 	v.SetDefault("auth.password_min_length", cfg.Auth.PasswordMinLength)
@@ -48,6 +50,11 @@ func Load(path string, overrides Overrides) (Config, error) {
 	v.SetDefault("client_token.default_ttl", cfg.ClientToken.DefaultTTL)
 	v.SetDefault("client_token.allow_unlimited", cfg.ClientToken.AllowUnlimited)
 	v.SetDefault("bootstrap.enabled", cfg.Bootstrap.Enabled)
+	v.SetDefault("cors.enabled", cfg.CORS.Enabled)
+	v.SetDefault("cors.allowed_origins", cfg.CORS.AllowedOrigins)
+	v.SetDefault("cors.allowed_methods", cfg.CORS.AllowedMethods)
+	v.SetDefault("cors.allowed_headers", cfg.CORS.AllowedHeaders)
+	v.SetDefault("cors.allow_credentials", cfg.CORS.AllowCredentials)
 
 	if path != "" {
 		v.SetConfigFile(path)
