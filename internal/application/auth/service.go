@@ -13,7 +13,6 @@ import (
 
 	"github.com/AFDEAPAC/kish/internal/domain/session"
 	"github.com/AFDEAPAC/kish/internal/domain/user"
-	"github.com/AFDEAPAC/kish/internal/infrastructure/security"
 )
 
 // ErrInvalidCredentials is returned when email or password does not match.
@@ -39,12 +38,31 @@ type RefreshResult struct {
 	ExpiresIn    int64
 }
 
+// PasswordVerifier is the authentication use case's credential verification
+// port. Implementations hide password hashing details from application logic.
+type PasswordVerifier interface {
+	VerifyPassword(plaintext, hash string) (bool, error)
+}
+
+// AccessTokenIssuer signs short-lived access tokens for authenticated users.
+type AccessTokenIssuer interface {
+	Issue(userID string, role user.UserRole) (string, error)
+}
+
+// OpaqueTokenCodec generates and hashes refresh tokens without exposing the
+// concrete cryptographic implementation to the authentication use case.
+type OpaqueTokenCodec interface {
+	Generate(prefix string) (string, error)
+	Hash(raw string) string
+}
+
 // Service provides authentication operations.
 type Service struct {
 	userRepo    user.Repository
 	sessionRepo session.Repository
-	hasher      security.PasswordHasher
-	jwtSvc      *security.JWTService
+	hasher      PasswordVerifier
+	issuer      AccessTokenIssuer
+	refresh     OpaqueTokenCodec
 	refreshTTL  time.Duration
 }
 
@@ -52,15 +70,17 @@ type Service struct {
 func NewService(
 	userRepo user.Repository,
 	sessionRepo session.Repository,
-	hasher security.PasswordHasher,
-	jwtSvc *security.JWTService,
+	hasher PasswordVerifier,
+	issuer AccessTokenIssuer,
+	refresh OpaqueTokenCodec,
 	refreshTTL time.Duration,
 ) *Service {
 	return &Service{
 		userRepo:    userRepo,
 		sessionRepo: sessionRepo,
 		hasher:      hasher,
-		jwtSvc:      jwtSvc,
+		issuer:      issuer,
+		refresh:     refresh,
 		refreshTTL:  refreshTTL,
 	}
 }
@@ -81,11 +101,12 @@ func (s *Service) Login(ctx context.Context, email, password string) (*LoginResu
 		return nil, ErrInvalidCredentials
 	}
 
-	if err := s.hasher.Verify(password, u.PasswordHash); err != nil {
-		if errors.Is(err, security.ErrInvalidPassword) {
-			return nil, ErrInvalidCredentials
-		}
+	ok, err := s.hasher.VerifyPassword(password, u.PasswordHash)
+	if err != nil {
 		return nil, fmt.Errorf("verify password: %w", err)
+	}
+	if !ok {
+		return nil, ErrInvalidCredentials
 	}
 
 	accessToken, expiresIn, err := s.issueAccessToken(u)
@@ -110,7 +131,7 @@ func (s *Service) Login(ctx context.Context, email, password string) (*LoginResu
 // Refresh validates the provided refresh token, revokes it, and issues a new
 // access token and refresh token (rotation).
 func (s *Service) Refresh(ctx context.Context, rawRefreshToken string) (*RefreshResult, error) {
-	hash := security.HashToken(rawRefreshToken)
+	hash := s.refresh.Hash(rawRefreshToken)
 	sess, err := s.sessionRepo.FindByTokenHash(ctx, hash)
 	if err != nil {
 		if errors.Is(err, session.ErrNotFound) {
@@ -156,7 +177,7 @@ func (s *Service) Refresh(ctx context.Context, rawRefreshToken string) (*Refresh
 
 // Logout revokes the session identified by the provided raw refresh token.
 func (s *Service) Logout(ctx context.Context, rawRefreshToken string) error {
-	hash := security.HashToken(rawRefreshToken)
+	hash := s.refresh.Hash(rawRefreshToken)
 	sess, err := s.sessionRepo.FindByTokenHash(ctx, hash)
 	if err != nil {
 		if errors.Is(err, session.ErrNotFound) {
@@ -171,7 +192,7 @@ func (s *Service) Logout(ctx context.Context, rawRefreshToken string) error {
 // issueAccessToken creates and signs a JWT access token for the user.
 // Returns the token string and its lifetime in seconds.
 func (s *Service) issueAccessToken(u *user.User) (string, int64, error) {
-	token, err := s.jwtSvc.Issue(u.ID, u.Role)
+	token, err := s.issuer.Issue(u.ID, u.Role)
 	if err != nil {
 		return "", 0, fmt.Errorf("issue access token: %w", err)
 	}
@@ -185,14 +206,14 @@ func (s *Service) issueAccessToken(u *user.User) (string, int64, error) {
 // issueRefreshToken generates a new opaque refresh token, persists its hash,
 // and returns the raw token to the caller.
 func (s *Service) issueRefreshToken(ctx context.Context, userID string) (string, error) {
-	rawToken, err := security.GenerateOpaqueToken("ref")
+	rawToken, err := s.refresh.Generate("ref")
 	if err != nil {
 		return "", fmt.Errorf("generate refresh token: %w", err)
 	}
 
 	sess := &session.Session{
 		UserID:    userID,
-		TokenHash: security.HashToken(rawToken),
+		TokenHash: s.refresh.Hash(rawToken),
 		ExpiresAt: time.Now().UTC().Add(s.refreshTTL),
 	}
 	if _, err := s.sessionRepo.Create(ctx, sess); err != nil {

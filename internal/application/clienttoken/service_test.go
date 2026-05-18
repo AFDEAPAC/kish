@@ -76,9 +76,26 @@ func (r *fakeCTRepo) TouchLastUsed(_ context.Context, id string, usedAt time.Tim
 
 // --- tests ---
 
+type fakeTokenCodec struct {
+	next int
+}
+
+func (c *fakeTokenCodec) Generate(prefix string) (string, error) {
+	c.next++
+	return prefix + "_token_" + string(rune('a'+c.next)), nil
+}
+
+func (fakeTokenCodec) Hash(raw string) string { return "hash:" + raw }
+func (fakeTokenCodec) Prefix(raw string) string {
+	if len(raw) < 8 {
+		return raw
+	}
+	return raw[:8]
+}
+
 func newCTService() (*appClientToken.Service, *fakeCTRepo) {
 	repo := newFakeCTRepo()
-	return appClientToken.NewService(repo, "kish"), repo
+	return appClientToken.NewService(repo, "kish", &fakeTokenCodec{}), repo
 }
 
 type fakeCipher struct{}
@@ -93,7 +110,7 @@ func (fakeCipher) Decrypt(encoded string) (string, error) {
 
 func newRevealCTService() (*appClientToken.Service, *fakeCTRepo) {
 	repo := newFakeCTRepo()
-	return appClientToken.NewService(repo, "kish", fakeCipher{}), repo
+	return appClientToken.NewService(repo, "kish", &fakeTokenCodec{}, fakeCipher{}), repo
 }
 
 func expiresInFuture() *time.Time {

@@ -66,7 +66,7 @@ func newJWTSvc() *security.JWTService {
 
 func newCTSvc() (*appClientToken.Service, *fakeMWCTRepo) {
 	repo := newFakeMWCTRepo()
-	return appClientToken.NewService(repo, "kish"), repo
+	return appClientToken.NewService(repo, "kish", security.NewOpaqueTokenService()), repo
 }
 
 func captureMiddleware(t *testing.T) (http.Handler, func() middleware.Principal) {

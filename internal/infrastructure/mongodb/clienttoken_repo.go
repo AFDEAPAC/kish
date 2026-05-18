@@ -17,6 +17,58 @@ import (
 
 const collectionClientTokens = "client_tokens"
 
+type clientTokenDocument struct {
+	ID             string              `bson:"_id"`
+	UserID         string              `bson:"user_id"`
+	Name           string              `bson:"name"`
+	TokenPrefix    string              `bson:"token_prefix"`
+	TokenHash      string              `bson:"token_hash"`
+	EncryptedToken string              `bson:"encrypted_token,omitempty"`
+	Scopes         []clienttoken.Scope `bson:"scopes"`
+	ExpiresAt      *time.Time          `bson:"expires_at,omitempty"`
+	Unlimited      bool                `bson:"unlimited"`
+	RevokedAt      *time.Time          `bson:"revoked_at,omitempty"`
+	LastUsedAt     *time.Time          `bson:"last_used_at,omitempty"`
+	CreatedAt      time.Time           `bson:"created_at"`
+	UpdatedAt      time.Time           `bson:"updated_at"`
+}
+
+func clientTokenDocumentFromDomain(t *clienttoken.ClientToken) clientTokenDocument {
+	return clientTokenDocument{
+		ID:             t.ID,
+		UserID:         t.UserID,
+		Name:           t.Name,
+		TokenPrefix:    t.TokenPrefix,
+		TokenHash:      t.TokenHash,
+		EncryptedToken: t.EncryptedToken,
+		Scopes:         t.Scopes,
+		ExpiresAt:      t.ExpiresAt,
+		Unlimited:      t.Unlimited,
+		RevokedAt:      t.RevokedAt,
+		LastUsedAt:     t.LastUsedAt,
+		CreatedAt:      t.CreatedAt,
+		UpdatedAt:      t.UpdatedAt,
+	}
+}
+
+func clientTokenFromDocument(doc clientTokenDocument) *clienttoken.ClientToken {
+	return &clienttoken.ClientToken{
+		ID:             doc.ID,
+		UserID:         doc.UserID,
+		Name:           doc.Name,
+		TokenPrefix:    doc.TokenPrefix,
+		TokenHash:      doc.TokenHash,
+		EncryptedToken: doc.EncryptedToken,
+		Scopes:         doc.Scopes,
+		ExpiresAt:      doc.ExpiresAt,
+		Unlimited:      doc.Unlimited,
+		RevokedAt:      doc.RevokedAt,
+		LastUsedAt:     doc.LastUsedAt,
+		CreatedAt:      doc.CreatedAt,
+		UpdatedAt:      doc.UpdatedAt,
+	}
+}
+
 // ClientTokenRepository implements domain/clienttoken.Repository using MongoDB.
 type ClientTokenRepository struct {
 	col *mongo.Collection
@@ -55,7 +107,7 @@ func (r *ClientTokenRepository) Create(ctx context.Context, t *clienttoken.Clien
 	t.CreatedAt = now
 	t.UpdatedAt = now
 
-	if _, err := r.col.InsertOne(ctx, t); err != nil {
+	if _, err := r.col.InsertOne(ctx, clientTokenDocumentFromDomain(t)); err != nil {
 		return nil, fmt.Errorf("client token insert: %w", err)
 	}
 	return t, nil
@@ -64,27 +116,27 @@ func (r *ClientTokenRepository) Create(ctx context.Context, t *clienttoken.Clien
 // FindByID returns the client token with the given ID, or clienttoken.ErrNotFound.
 func (r *ClientTokenRepository) FindByID(ctx context.Context, id string) (*clienttoken.ClientToken, error) {
 	filter := bson.D{{Key: "_id", Value: id}}
-	var t clienttoken.ClientToken
-	if err := r.col.FindOne(ctx, filter).Decode(&t); err != nil {
+	var doc clientTokenDocument
+	if err := r.col.FindOne(ctx, filter).Decode(&doc); err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			return nil, clienttoken.ErrNotFound
 		}
 		return nil, fmt.Errorf("client token find by id: %w", err)
 	}
-	return &t, nil
+	return clientTokenFromDocument(doc), nil
 }
 
 // FindByTokenHash returns the client token whose token_hash matches hash.
 func (r *ClientTokenRepository) FindByTokenHash(ctx context.Context, hash string) (*clienttoken.ClientToken, error) {
 	filter := bson.D{{Key: "token_hash", Value: hash}}
-	var t clienttoken.ClientToken
-	if err := r.col.FindOne(ctx, filter).Decode(&t); err != nil {
+	var doc clientTokenDocument
+	if err := r.col.FindOne(ctx, filter).Decode(&doc); err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			return nil, clienttoken.ErrNotFound
 		}
 		return nil, fmt.Errorf("client token find by hash: %w", err)
 	}
-	return &t, nil
+	return clientTokenFromDocument(doc), nil
 }
 
 // ListByUserID returns all client tokens owned by the given user, ordered by created_at desc.
@@ -97,9 +149,13 @@ func (r *ClientTokenRepository) ListByUserID(ctx context.Context, userID string)
 	}
 	defer cur.Close(ctx)
 
-	var tokens []*clienttoken.ClientToken
-	if err := cur.All(ctx, &tokens); err != nil {
+	var docs []clientTokenDocument
+	if err := cur.All(ctx, &docs); err != nil {
 		return nil, fmt.Errorf("client token list decode: %w", err)
+	}
+	tokens := make([]*clienttoken.ClientToken, 0, len(docs))
+	for _, doc := range docs {
+		tokens = append(tokens, clientTokenFromDocument(doc))
 	}
 	return tokens, nil
 }

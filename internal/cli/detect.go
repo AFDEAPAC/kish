@@ -33,7 +33,7 @@ type detectService interface {
 
 var (
 	newDetectCommandRunner = func() command.Runner { return command.NewDefaultRunner() }
-	newDetectCollectors    = detect.DefaultCollectors
+	newDetectCollectors    = defaultDetectCollectors
 	newDetectService       = func(cols []environment.Collector) detectService {
 		return detect.NewDetectionService(cols)
 	}

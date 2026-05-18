@@ -11,7 +11,6 @@ import (
 	"fmt"
 
 	"github.com/AFDEAPAC/kish/internal/domain/user"
-	"github.com/AFDEAPAC/kish/internal/infrastructure/security"
 )
 
 // ErrLastAdmin is returned when an operation would leave the system with no admin.
@@ -28,15 +27,24 @@ type CreateInput struct {
 	Role        user.UserRole
 }
 
+// PasswordHasher is the user-management use case's password port.
+//
+// Implementations hash and verify plaintext passwords without leaking the
+// concrete algorithm or mismatch sentinel into application logic.
+type PasswordHasher interface {
+	Hash(plaintext string) (string, error)
+	VerifyPassword(plaintext, hash string) (bool, error)
+}
+
 // Service provides user management operations.
 type Service struct {
-	repo   user.Repository
-	hasher security.PasswordHasher
+	repo      user.Repository
+	hasher    PasswordHasher
 	minPwdLen int
 }
 
 // NewService constructs a UserService.
-func NewService(repo user.Repository, hasher security.PasswordHasher, minPwdLen int) *Service {
+func NewService(repo user.Repository, hasher PasswordHasher, minPwdLen int) *Service {
 	return &Service{repo: repo, hasher: hasher, minPwdLen: minPwdLen}
 }
 
@@ -131,11 +139,12 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPwd, newPwd
 		return err
 	}
 
-	if err := s.hasher.Verify(currentPwd, u.PasswordHash); err != nil {
-		if errors.Is(err, security.ErrInvalidPassword) {
-			return ErrIncorrectPassword
-		}
+	ok, err := s.hasher.VerifyPassword(currentPwd, u.PasswordHash)
+	if err != nil {
 		return fmt.Errorf("verify password: %w", err)
+	}
+	if !ok {
+		return ErrIncorrectPassword
 	}
 
 	newHash, err := s.hasher.Hash(newPwd)

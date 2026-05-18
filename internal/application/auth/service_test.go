@@ -9,7 +9,6 @@ import (
 	appAuth "github.com/AFDEAPAC/kish/internal/application/auth"
 	"github.com/AFDEAPAC/kish/internal/domain/session"
 	"github.com/AFDEAPAC/kish/internal/domain/user"
-	"github.com/AFDEAPAC/kish/internal/infrastructure/security"
 )
 
 // --- fakes ---
@@ -91,16 +90,40 @@ func (r *fakeSessionRepo) RevokeAllByUserID(_ context.Context, userID string) er
 
 // --- helpers ---
 
+type fakePasswordHasher struct{}
+
+func (fakePasswordHasher) Hash(plaintext string) (string, error) { return "hash:" + plaintext, nil }
+func (fakePasswordHasher) VerifyPassword(plaintext, hash string) (bool, error) {
+	return hash == "hash:"+plaintext, nil
+}
+
+type fakeAccessTokenIssuer struct{}
+
+func (fakeAccessTokenIssuer) Issue(userID string, role user.UserRole) (string, error) {
+	return "access:" + userID + ":" + string(role), nil
+}
+
+type fakeOpaqueTokenCodec struct {
+	next int
+}
+
+func (c *fakeOpaqueTokenCodec) Generate(prefix string) (string, error) {
+	c.next++
+	return prefix + "_token_" + string(rune('a'+c.next)), nil
+}
+
+func (fakeOpaqueTokenCodec) Hash(raw string) string { return "hash:" + raw }
+
 func newAuthService() (*appAuth.Service, *fakeAuthUserRepo, *fakeSessionRepo) {
 	userRepo := newFakeAuthUserRepo()
 	sessionRepo := newFakeSessionRepo()
-	hasher := security.NewBcryptHasher()
-	jwtSvc := security.NewJWTService("test-secret-32chars-at-minimum!!", 24*time.Hour)
-	svc := appAuth.NewService(userRepo, sessionRepo, hasher, jwtSvc, 720*time.Hour)
+	hasher := fakePasswordHasher{}
+	codec := &fakeOpaqueTokenCodec{}
+	svc := appAuth.NewService(userRepo, sessionRepo, hasher, fakeAccessTokenIssuer{}, codec, 720*time.Hour)
 	return svc, userRepo, sessionRepo
 }
 
-func makeActiveUser(t *testing.T, hasher *security.BcryptHasher, email, password string, role user.UserRole) *user.User {
+func makeActiveUser(t *testing.T, hasher fakePasswordHasher, email, password string, role user.UserRole) *user.User {
 	t.Helper()
 	hash, err := hasher.Hash(password)
 	if err != nil {
@@ -119,7 +142,7 @@ func makeActiveUser(t *testing.T, hasher *security.BcryptHasher, email, password
 
 func TestLogin_Success(t *testing.T) {
 	svc, userRepo, _ := newAuthService()
-	hasher := security.NewBcryptHasher()
+	hasher := fakePasswordHasher{}
 	u := makeActiveUser(t, hasher, "dev@example.com", "password123", user.RoleDeveloper)
 	userRepo.AddUser(u)
 
@@ -140,7 +163,7 @@ func TestLogin_Success(t *testing.T) {
 
 func TestLogin_WrongPassword(t *testing.T) {
 	svc, userRepo, _ := newAuthService()
-	hasher := security.NewBcryptHasher()
+	hasher := fakePasswordHasher{}
 	u := makeActiveUser(t, hasher, "dev@example.com", "password123", user.RoleDeveloper)
 	userRepo.AddUser(u)
 
@@ -152,7 +175,7 @@ func TestLogin_WrongPassword(t *testing.T) {
 
 func TestLogin_DisabledUser_Rejected(t *testing.T) {
 	svc, userRepo, _ := newAuthService()
-	hasher := security.NewBcryptHasher()
+	hasher := fakePasswordHasher{}
 	u := makeActiveUser(t, hasher, "disabled@example.com", "password123", user.RoleDeveloper)
 	u.Status = user.StatusDisabled
 	userRepo.AddUser(u)
@@ -165,7 +188,7 @@ func TestLogin_DisabledUser_Rejected(t *testing.T) {
 
 func TestRefresh_Success(t *testing.T) {
 	svc, userRepo, _ := newAuthService()
-	hasher := security.NewBcryptHasher()
+	hasher := fakePasswordHasher{}
 	u := makeActiveUser(t, hasher, "dev@example.com", "password123", user.RoleDeveloper)
 	userRepo.AddUser(u)
 
@@ -193,7 +216,7 @@ func TestRefresh_Success(t *testing.T) {
 
 func TestRefresh_RevokedToken_Rejected(t *testing.T) {
 	svc, userRepo, sessionRepo := newAuthService()
-	hasher := security.NewBcryptHasher()
+	hasher := fakePasswordHasher{}
 	u := makeActiveUser(t, hasher, "dev@example.com", "password123", user.RoleDeveloper)
 	userRepo.AddUser(u)
 
@@ -213,7 +236,7 @@ func TestRefresh_RevokedToken_Rejected(t *testing.T) {
 
 func TestLogout_RevokesSession(t *testing.T) {
 	svc, userRepo, _ := newAuthService()
-	hasher := security.NewBcryptHasher()
+	hasher := fakePasswordHasher{}
 	u := makeActiveUser(t, hasher, "dev@example.com", "password123", user.RoleDeveloper)
 	userRepo.AddUser(u)
 

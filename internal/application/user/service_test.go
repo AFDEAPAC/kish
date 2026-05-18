@@ -7,21 +7,20 @@ import (
 
 	appUser "github.com/AFDEAPAC/kish/internal/application/user"
 	"github.com/AFDEAPAC/kish/internal/domain/user"
-	"github.com/AFDEAPAC/kish/internal/infrastructure/security"
 )
 
 // --- fakes ---
 
 type fakeUserRepo struct {
-	users    map[string]*user.User
-	byEmail  map[string]*user.User
+	users      map[string]*user.User
+	byEmail    map[string]*user.User
 	roleCounts map[user.UserRole]int64
 }
 
 func newFakeUserRepo() *fakeUserRepo {
 	return &fakeUserRepo{
-		users:    make(map[string]*user.User),
-		byEmail:  make(map[string]*user.User),
+		users:      make(map[string]*user.User),
+		byEmail:    make(map[string]*user.User),
 		roleCounts: make(map[user.UserRole]int64),
 	}
 }
@@ -91,9 +90,16 @@ func (r *fakeUserRepo) UpdatePasswordHash(_ context.Context, id, hash string) er
 
 // --- tests ---
 
+type fakePasswordHasher struct{}
+
+func (fakePasswordHasher) Hash(plaintext string) (string, error) { return "hash:" + plaintext, nil }
+func (fakePasswordHasher) VerifyPassword(plaintext, hash string) (bool, error) {
+	return hash == "hash:"+plaintext, nil
+}
+
 func newService() (*appUser.Service, *fakeUserRepo) {
 	repo := newFakeUserRepo()
-	hasher := security.NewBcryptHasher()
+	hasher := fakePasswordHasher{}
 	return appUser.NewService(repo, hasher, 8), repo
 }
 

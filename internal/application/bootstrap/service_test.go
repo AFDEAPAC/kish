@@ -5,9 +5,7 @@ import (
 	"testing"
 
 	appBootstrap "github.com/AFDEAPAC/kish/internal/application/bootstrap"
-	"github.com/AFDEAPAC/kish/internal/config"
 	"github.com/AFDEAPAC/kish/internal/domain/user"
-	"github.com/AFDEAPAC/kish/internal/infrastructure/security"
 )
 
 // --- fake repo ---
@@ -68,16 +66,20 @@ func (r *fakeBootstrapUserRepo) UpdatePasswordHash(_ context.Context, _, _ strin
 
 // --- tests ---
 
+type fakePasswordHasher struct{}
+
+func (fakePasswordHasher) Hash(plaintext string) (string, error) { return "hash:" + plaintext, nil }
+
 func TestBootstrap_CreatesAdminWhenNoneExists(t *testing.T) {
 	repo := newFakeBootstrapUserRepo()
-	hasher := security.NewBcryptHasher()
-	cfg := config.BootstrapConfig{
+	hasher := fakePasswordHasher{}
+	options := appBootstrap.Options{
 		Enabled:          true,
 		AdminEmail:       "admin@example.com",
 		AdminPassword:    "admin1234",
 		AdminDisplayName: "Test Admin",
 	}
-	svc := appBootstrap.NewService(repo, hasher, cfg, 8)
+	svc := appBootstrap.NewService(repo, hasher, options, 8)
 	svc.Run(context.Background())
 
 	u, err := repo.FindByEmail(context.Background(), "admin@example.com")
@@ -94,7 +96,7 @@ func TestBootstrap_CreatesAdminWhenNoneExists(t *testing.T) {
 
 func TestBootstrap_NoopWhenAdminExists(t *testing.T) {
 	repo := newFakeBootstrapUserRepo()
-	hasher := security.NewBcryptHasher()
+	hasher := fakePasswordHasher{}
 
 	// Pre-create an admin.
 	hash, _ := hasher.Hash("existing1234")
@@ -105,12 +107,12 @@ func TestBootstrap_NoopWhenAdminExists(t *testing.T) {
 		PasswordHash: hash,
 	})
 
-	cfg := config.BootstrapConfig{
+	options := appBootstrap.Options{
 		Enabled:       true,
 		AdminEmail:    "newadmin@example.com",
 		AdminPassword: "admin1234",
 	}
-	svc := appBootstrap.NewService(repo, hasher, cfg, 8)
+	svc := appBootstrap.NewService(repo, hasher, options, 8)
 	svc.Run(context.Background())
 
 	_, err := repo.FindByEmail(context.Background(), "newadmin@example.com")
@@ -121,13 +123,13 @@ func TestBootstrap_NoopWhenAdminExists(t *testing.T) {
 
 func TestBootstrap_DisabledDoesNotCreateAdmin(t *testing.T) {
 	repo := newFakeBootstrapUserRepo()
-	hasher := security.NewBcryptHasher()
-	cfg := config.BootstrapConfig{
+	hasher := fakePasswordHasher{}
+	options := appBootstrap.Options{
 		Enabled:       false,
 		AdminEmail:    "admin@example.com",
 		AdminPassword: "admin1234",
 	}
-	svc := appBootstrap.NewService(repo, hasher, cfg, 8)
+	svc := appBootstrap.NewService(repo, hasher, options, 8)
 	svc.Run(context.Background())
 
 	_, err := repo.FindByEmail(context.Background(), "admin@example.com")
@@ -138,13 +140,13 @@ func TestBootstrap_DisabledDoesNotCreateAdmin(t *testing.T) {
 
 func TestBootstrap_SecondRunIsNoop(t *testing.T) {
 	repo := newFakeBootstrapUserRepo()
-	hasher := security.NewBcryptHasher()
-	cfg := config.BootstrapConfig{
+	hasher := fakePasswordHasher{}
+	options := appBootstrap.Options{
 		Enabled:       true,
 		AdminEmail:    "admin@example.com",
 		AdminPassword: "admin1234",
 	}
-	svc := appBootstrap.NewService(repo, hasher, cfg, 8)
+	svc := appBootstrap.NewService(repo, hasher, options, 8)
 	svc.Run(context.Background())
 	// Second run should be a no-op (admin exists).
 	svc.Run(context.Background())

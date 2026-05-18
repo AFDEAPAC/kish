@@ -14,7 +14,6 @@ import (
 	domArtifact "github.com/AFDEAPAC/kish/internal/domain/artifact"
 	"github.com/AFDEAPAC/kish/internal/domain/environment"
 	"github.com/AFDEAPAC/kish/internal/domain/testcase"
-	"github.com/AFDEAPAC/kish/internal/infrastructure/storage"
 )
 
 // --- fake implementations ---
@@ -143,12 +142,12 @@ func (s *fakeObjectStore) PutObject(_ context.Context, key string, r io.Reader, 
 	s.objects[key] = data
 	return nil
 }
-func (s *fakeObjectStore) GetObject(_ context.Context, key string) (io.ReadCloser, storage.ObjectInfo, error) {
+func (s *fakeObjectStore) GetObject(_ context.Context, key string) (io.ReadCloser, appArtifact.ObjectInfo, error) {
 	data, ok := s.objects[key]
 	if !ok {
-		return nil, storage.ObjectInfo{}, storage.ErrObjectNotFound
+		return nil, appArtifact.ObjectInfo{}, appArtifact.ErrObjectNotFound
 	}
-	return io.NopCloser(bytes.NewReader(data)), storage.ObjectInfo{Key: key, Size: int64(len(data))}, nil
+	return io.NopCloser(bytes.NewReader(data)), appArtifact.ObjectInfo{Key: key, Size: int64(len(data))}, nil
 }
 func (s *fakeObjectStore) DeleteObject(_ context.Context, key string) error {
 	delete(s.objects, key)

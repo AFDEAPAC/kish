@@ -14,7 +14,6 @@ import (
 	"github.com/AFDEAPAC/kish/internal/domain/environment"
 	"github.com/AFDEAPAC/kish/internal/domain/testcase"
 	"github.com/AFDEAPAC/kish/internal/domain/user"
-	"github.com/AFDEAPAC/kish/internal/infrastructure/storage"
 	"github.com/AFDEAPAC/kish/internal/interfaces/http/dto"
 	"github.com/AFDEAPAC/kish/internal/interfaces/http/middleware"
 )
@@ -118,7 +117,7 @@ func (h *ArtifactHandler) Put(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "result and execution-environment artifacts are immutable on published testcases")
 		case isValidationError(err):
 			writeError(w, http.StatusBadRequest, err.Error())
-		case errors.Is(err, storage.ErrInsufficientStorage):
+		case errors.Is(err, appArtifact.ErrInsufficientStorage):
 			log.Printf("[artifact] store failed case_id=%q artifact_name=%q: %v", caseID, artifactName, err)
 			writeError(w, http.StatusInsufficientStorage, "artifact storage is full")
 		default:

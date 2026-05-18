@@ -17,6 +17,43 @@ import (
 
 const collectionUsers = "users"
 
+type userDocument struct {
+	ID           string          `bson:"_id"`
+	Email        string          `bson:"email"`
+	DisplayName  string          `bson:"display_name"`
+	Role         user.UserRole   `bson:"role"`
+	Status       user.UserStatus `bson:"status"`
+	PasswordHash string          `bson:"password_hash"`
+	CreatedAt    time.Time       `bson:"created_at"`
+	UpdatedAt    time.Time       `bson:"updated_at"`
+}
+
+func userDocumentFromDomain(u *user.User) userDocument {
+	return userDocument{
+		ID:           u.ID,
+		Email:        u.Email,
+		DisplayName:  u.DisplayName,
+		Role:         u.Role,
+		Status:       u.Status,
+		PasswordHash: u.PasswordHash,
+		CreatedAt:    u.CreatedAt,
+		UpdatedAt:    u.UpdatedAt,
+	}
+}
+
+func userFromDocument(doc userDocument) *user.User {
+	return &user.User{
+		ID:           doc.ID,
+		Email:        doc.Email,
+		DisplayName:  doc.DisplayName,
+		Role:         doc.Role,
+		Status:       doc.Status,
+		PasswordHash: doc.PasswordHash,
+		CreatedAt:    doc.CreatedAt,
+		UpdatedAt:    doc.UpdatedAt,
+	}
+}
+
 // UserRepository implements domain/user.Repository using MongoDB.
 type UserRepository struct {
 	col *mongo.Collection
@@ -58,7 +95,7 @@ func (r *UserRepository) Create(ctx context.Context, u *user.User) (*user.User, 
 	u.CreatedAt = now
 	u.UpdatedAt = now
 
-	_, err := r.col.InsertOne(ctx, u)
+	_, err := r.col.InsertOne(ctx, userDocumentFromDomain(u))
 	if err != nil {
 		if mongo.IsDuplicateKeyError(err) {
 			return nil, user.ErrEmailConflict
@@ -71,28 +108,28 @@ func (r *UserRepository) Create(ctx context.Context, u *user.User) (*user.User, 
 // FindByID returns the user with the given ID, or user.ErrNotFound.
 func (r *UserRepository) FindByID(ctx context.Context, id string) (*user.User, error) {
 	filter := bson.D{{Key: "_id", Value: id}}
-	var u user.User
-	if err := r.col.FindOne(ctx, filter).Decode(&u); err != nil {
+	var doc userDocument
+	if err := r.col.FindOne(ctx, filter).Decode(&doc); err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			return nil, user.ErrNotFound
 		}
 		return nil, fmt.Errorf("user find by id: %w", err)
 	}
-	return &u, nil
+	return userFromDocument(doc), nil
 }
 
 // FindByEmail returns the user with the given email, or user.ErrNotFound.
 // The returned user includes PasswordHash for authentication use.
 func (r *UserRepository) FindByEmail(ctx context.Context, email string) (*user.User, error) {
 	filter := bson.D{{Key: "email", Value: email}}
-	var u user.User
-	if err := r.col.FindOne(ctx, filter).Decode(&u); err != nil {
+	var doc userDocument
+	if err := r.col.FindOne(ctx, filter).Decode(&doc); err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			return nil, user.ErrNotFound
 		}
 		return nil, fmt.Errorf("user find by email: %w", err)
 	}
-	return &u, nil
+	return userFromDocument(doc), nil
 }
 
 // Update applies the non-zero fields of input to the user identified by id.
@@ -111,7 +148,7 @@ func (r *UserRepository) Update(ctx context.Context, id string, input user.Updat
 	filter := bson.D{{Key: "_id", Value: id}}
 	after := options.After
 	opt := options.FindOneAndUpdate().SetReturnDocument(after)
-	var updated user.User
+	var updated userDocument
 	err := r.col.FindOneAndUpdate(ctx, filter, bson.D{{Key: "$set", Value: set}}, opt).Decode(&updated)
 	if err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
@@ -119,7 +156,7 @@ func (r *UserRepository) Update(ctx context.Context, id string, input user.Updat
 		}
 		return nil, fmt.Errorf("user update: %w", err)
 	}
-	return &updated, nil
+	return userFromDocument(updated), nil
 }
 
 // List returns all user records ordered by created_at ascending.
@@ -131,9 +168,13 @@ func (r *UserRepository) List(ctx context.Context) ([]*user.User, error) {
 	}
 	defer cur.Close(ctx)
 
-	var users []*user.User
-	if err := cur.All(ctx, &users); err != nil {
+	var docs []userDocument
+	if err := cur.All(ctx, &docs); err != nil {
 		return nil, fmt.Errorf("user list decode: %w", err)
+	}
+	users := make([]*user.User, 0, len(docs))
+	for _, doc := range docs {
+		users = append(users, userFromDocument(doc))
 	}
 	return users, nil
 }

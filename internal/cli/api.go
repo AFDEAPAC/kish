@@ -198,6 +198,7 @@ func runAPI(ctx context.Context, flags apiFlags) error {
 	// Initialise security infrastructure.
 	hasher := security.NewBcryptHasher()
 	jwtSvc := security.NewJWTService(cfg.Auth.JWTSecret, cfg.Auth.AccessTokenTTL)
+	tokenCodec := security.NewOpaqueTokenService()
 	tokenEncryptionKey := cfg.Auth.ClientTokenEncryptionKey
 	if tokenEncryptionKey == "" {
 		tokenEncryptionKey = cfg.Auth.JWTSecret
@@ -211,9 +212,14 @@ func runAPI(ctx context.Context, flags apiFlags) error {
 	tcSvc := apptestcase.NewService(tcRepo, apptestcase.DeleteCleanup{ArtifactRepo: artRepo, Store: objStore})
 	artSvc := appArtifact.NewService(tcRepo, artRepo, objStore)
 	userSvc := appUser.NewService(userRepo, hasher, cfg.Auth.PasswordMinLength)
-	authSvc := appAuth.NewService(userRepo, sessionRepo, hasher, jwtSvc, cfg.Auth.RefreshTokenTTL)
-	ctSvc := appClientToken.NewService(ctRepo, cfg.ClientToken.Prefix, tokenCipher)
-	bootstrapSvc := appBootstrap.NewService(userRepo, hasher, cfg.Bootstrap, cfg.Auth.PasswordMinLength)
+	authSvc := appAuth.NewService(userRepo, sessionRepo, hasher, jwtSvc, tokenCodec, cfg.Auth.RefreshTokenTTL)
+	ctSvc := appClientToken.NewService(ctRepo, cfg.ClientToken.Prefix, tokenCodec, tokenCipher)
+	bootstrapSvc := appBootstrap.NewService(userRepo, hasher, appBootstrap.Options{
+		Enabled:          cfg.Bootstrap.Enabled,
+		AdminEmail:       cfg.Bootstrap.AdminEmail,
+		AdminPassword:    cfg.Bootstrap.AdminPassword,
+		AdminDisplayName: cfg.Bootstrap.AdminDisplayName,
+	}, cfg.Auth.PasswordMinLength, log.Default())
 
 	// Bootstrap: create initial admin if none exists.
 	bootstrapSvc.Run(ctx)

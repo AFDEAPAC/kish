@@ -61,3 +61,16 @@ func (h *BcryptHasher) Verify(plaintext, hash string) error {
 	}
 	return nil
 }
+
+// VerifyPassword checks whether plaintext matches hash without exposing the
+// bcrypt-specific mismatch error to application use cases.
+func (h *BcryptHasher) VerifyPassword(plaintext, hash string) (bool, error) {
+	err := h.Verify(plaintext, hash)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, ErrInvalidPassword) {
+		return false, nil
+	}
+	return false, err
+}

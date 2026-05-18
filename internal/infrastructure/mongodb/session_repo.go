@@ -16,6 +16,40 @@ import (
 
 const collectionSessions = "sessions"
 
+type sessionDocument struct {
+	ID         string     `bson:"_id"`
+	UserID     string     `bson:"user_id"`
+	TokenHash  string     `bson:"token_hash"`
+	ExpiresAt  time.Time  `bson:"expires_at"`
+	RevokedAt  *time.Time `bson:"revoked_at,omitempty"`
+	CreatedAt  time.Time  `bson:"created_at"`
+	LastUsedAt *time.Time `bson:"last_used_at,omitempty"`
+}
+
+func sessionDocumentFromDomain(s *session.Session) sessionDocument {
+	return sessionDocument{
+		ID:         s.ID,
+		UserID:     s.UserID,
+		TokenHash:  s.TokenHash,
+		ExpiresAt:  s.ExpiresAt,
+		RevokedAt:  s.RevokedAt,
+		CreatedAt:  s.CreatedAt,
+		LastUsedAt: s.LastUsedAt,
+	}
+}
+
+func sessionFromDocument(doc sessionDocument) *session.Session {
+	return &session.Session{
+		ID:         doc.ID,
+		UserID:     doc.UserID,
+		TokenHash:  doc.TokenHash,
+		ExpiresAt:  doc.ExpiresAt,
+		RevokedAt:  doc.RevokedAt,
+		CreatedAt:  doc.CreatedAt,
+		LastUsedAt: doc.LastUsedAt,
+	}
+}
+
 // SessionRepository implements domain/session.Repository using MongoDB.
 type SessionRepository struct {
 	col *mongo.Collection
@@ -51,7 +85,7 @@ func (r *SessionRepository) Create(ctx context.Context, s *session.Session) (*se
 	}
 	s.CreatedAt = time.Now().UTC()
 
-	if _, err := r.col.InsertOne(ctx, s); err != nil {
+	if _, err := r.col.InsertOne(ctx, sessionDocumentFromDomain(s)); err != nil {
 		return nil, fmt.Errorf("session insert: %w", err)
 	}
 	return s, nil
@@ -60,14 +94,14 @@ func (r *SessionRepository) Create(ctx context.Context, s *session.Session) (*se
 // FindByTokenHash returns the session whose token_hash matches hash, or session.ErrNotFound.
 func (r *SessionRepository) FindByTokenHash(ctx context.Context, hash string) (*session.Session, error) {
 	filter := bson.D{{Key: "token_hash", Value: hash}}
-	var s session.Session
-	if err := r.col.FindOne(ctx, filter).Decode(&s); err != nil {
+	var doc sessionDocument
+	if err := r.col.FindOne(ctx, filter).Decode(&doc); err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			return nil, session.ErrNotFound
 		}
 		return nil, fmt.Errorf("session find: %w", err)
 	}
-	return &s, nil
+	return sessionFromDocument(doc), nil
 }
 
 // Revoke marks the session identified by id as revoked.

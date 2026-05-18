@@ -18,7 +18,6 @@ import (
 	domArtifact "github.com/AFDEAPAC/kish/internal/domain/artifact"
 	"github.com/AFDEAPAC/kish/internal/domain/testcase"
 	"github.com/AFDEAPAC/kish/internal/domain/user"
-	"github.com/AFDEAPAC/kish/internal/infrastructure/storage"
 	infrahttp "github.com/AFDEAPAC/kish/internal/interfaces/http"
 	"github.com/AFDEAPAC/kish/internal/interfaces/http/dto"
 	"github.com/AFDEAPAC/kish/internal/interfaces/http/handler"
@@ -145,12 +144,12 @@ func (s *artHandlerFakeStore) PutObject(_ context.Context, key string, r io.Read
 	s.objects[key] = data
 	return nil
 }
-func (s *artHandlerFakeStore) GetObject(_ context.Context, key string) (io.ReadCloser, storage.ObjectInfo, error) {
+func (s *artHandlerFakeStore) GetObject(_ context.Context, key string) (io.ReadCloser, appArtifact.ObjectInfo, error) {
 	data, ok := s.objects[key]
 	if !ok {
-		return nil, storage.ObjectInfo{}, storage.ErrObjectNotFound
+		return nil, appArtifact.ObjectInfo{}, appArtifact.ErrObjectNotFound
 	}
-	return io.NopCloser(bytes.NewReader(data)), storage.ObjectInfo{Key: key, Size: int64(len(data))}, nil
+	return io.NopCloser(bytes.NewReader(data)), appArtifact.ObjectInfo{Key: key, Size: int64(len(data))}, nil
 }
 func (s *artHandlerFakeStore) DeleteObject(_ context.Context, key string) error {
 	delete(s.objects, key)
@@ -177,7 +176,7 @@ func newArtTestServer(tcIDs ...string) *httptest.Server {
 	return newArtTestServerWithDeps(tcRepo, artRepo, objStore)
 }
 
-func newArtTestServerWithDeps(tcRepo *artHandlerFakeTCRepo, artRepo *artHandlerFakeArtRepo, objStore storage.ObjectStore) *httptest.Server {
+func newArtTestServerWithDeps(tcRepo *artHandlerFakeTCRepo, artRepo *artHandlerFakeArtRepo, objStore appArtifact.ObjectStore) *httptest.Server {
 	artSvc := appArtifact.NewService(tcRepo, artRepo, objStore)
 	tcSvc := apptestcase.NewService(tcRepo)
 
@@ -383,7 +382,7 @@ func TestArtifactPut_InsufficientStorageReturns507(t *testing.T) {
 	tcRepo := newArtHandlerTCRepo("tc1")
 	artRepo := newArtHandlerArtRepo()
 	objStore := newArtHandlerStore()
-	objStore.putErr = fmt.Errorf("minio capacity: %w", storage.ErrInsufficientStorage)
+	objStore.putErr = fmt.Errorf("minio capacity: %w", appArtifact.ErrInsufficientStorage)
 	srv := newArtTestServerWithDeps(tcRepo, artRepo, objStore)
 	defer srv.Close()
 

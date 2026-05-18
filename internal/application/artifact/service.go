@@ -18,18 +18,17 @@ import (
 	domartifact "github.com/AFDEAPAC/kish/internal/domain/artifact"
 	"github.com/AFDEAPAC/kish/internal/domain/environment"
 	"github.com/AFDEAPAC/kish/internal/domain/testcase"
-	"github.com/AFDEAPAC/kish/internal/infrastructure/storage"
 )
 
 // Service coordinates artifact upload, retrieval, listing, and deletion.
 type Service struct {
 	tcRepo  testcase.Repository
 	artRepo domartifact.Repository
-	store   storage.ObjectStore
+	store   ObjectStore
 }
 
 // NewService constructs a Service with the provided dependencies.
-func NewService(tcRepo testcase.Repository, artRepo domartifact.Repository, store storage.ObjectStore) *Service {
+func NewService(tcRepo testcase.Repository, artRepo domartifact.Repository, store ObjectStore) *Service {
 	return &Service{tcRepo: tcRepo, artRepo: artRepo, store: store}
 }
 
@@ -138,7 +137,7 @@ func (s *Service) GetArtifact(ctx context.Context, caseID, artifactName string) 
 
 	rc, _, err := s.store.GetObject(ctx, meta.StorageKey)
 	if err != nil {
-		if errors.Is(err, storage.ErrObjectNotFound) {
+		if errors.Is(err, ErrObjectNotFound) {
 			// Metadata exists but content is gone (e.g. manual deletion from disk).
 			// Treat as not found from the API perspective.
 			return nil, nil, domartifact.ErrNotFound
@@ -184,7 +183,7 @@ func (s *Service) DeleteArtifact(ctx context.Context, caseID, artifactName strin
 	}
 
 	// Delete object first; if it's already gone, continue to clean up metadata.
-	if err := s.store.DeleteObject(ctx, meta.StorageKey); err != nil && !errors.Is(err, storage.ErrObjectNotFound) {
+	if err := s.store.DeleteObject(ctx, meta.StorageKey); err != nil && !errors.Is(err, ErrObjectNotFound) {
 		return fmt.Errorf("delete artifact content: %w", err)
 	}
 

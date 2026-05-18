@@ -9,27 +9,56 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 
-	"github.com/AFDEAPAC/kish/internal/config"
 	"github.com/AFDEAPAC/kish/internal/domain/user"
-	"github.com/AFDEAPAC/kish/internal/infrastructure/security"
 )
+
+// Options contains the startup data required to create the initial admin.
+//
+// The outer config loader owns file and environment parsing; the bootstrap use
+// case only receives the values it needs for the application decision.
+type Options struct {
+	Enabled          bool
+	AdminEmail       string
+	AdminPassword    string
+	AdminDisplayName string
+}
+
+// PasswordHasher hashes the bootstrap admin password without exposing the
+// concrete security implementation to the use case.
+type PasswordHasher interface {
+	Hash(plaintext string) (string, error)
+}
+
+// Logger records bootstrap outcomes for the outer startup workflow.
+type Logger interface {
+	Printf(format string, v ...any)
+}
+
+type noopLogger struct{}
+
+func (noopLogger) Printf(string, ...any) {}
 
 // Service handles the one-time bootstrap admin creation.
 type Service struct {
-	userRepo user.Repository
-	hasher   security.PasswordHasher
-	cfg      config.BootstrapConfig
+	userRepo  user.Repository
+	hasher    PasswordHasher
+	options   Options
+	logger    Logger
 	minPwdLen int
 }
 
 // NewService constructs a BootstrapService.
-func NewService(userRepo user.Repository, hasher security.PasswordHasher, cfg config.BootstrapConfig, minPwdLen int) *Service {
+func NewService(userRepo user.Repository, hasher PasswordHasher, options Options, minPwdLen int, loggers ...Logger) *Service {
+	logger := Logger(noopLogger{})
+	if len(loggers) > 0 && loggers[0] != nil {
+		logger = loggers[0]
+	}
 	return &Service{
 		userRepo:  userRepo,
 		hasher:    hasher,
-		cfg:       cfg,
+		options:   options,
+		logger:    logger,
 		minPwdLen: minPwdLen,
 	}
 }
@@ -39,50 +68,50 @@ func NewService(userRepo user.Repository, hasher security.PasswordHasher, cfg co
 func (s *Service) Run(ctx context.Context) {
 	count, err := s.userRepo.CountByRole(ctx, user.RoleAdmin)
 	if err != nil {
-		log.Printf("[bootstrap] error checking admin count: %v — skipping bootstrap", err)
+		s.logger.Printf("[bootstrap] error checking admin count: %v — skipping bootstrap", err)
 		return
 	}
 
 	if count > 0 {
-		log.Printf("[bootstrap] %d admin(s) already exist — skipping bootstrap", count)
+		s.logger.Printf("[bootstrap] %d admin(s) already exist — skipping bootstrap", count)
 		return
 	}
 
-	if !s.cfg.Enabled {
-		log.Printf("[bootstrap] no admin users exist and bootstrap is disabled — admin-only operations will be unavailable")
+	if !s.options.Enabled {
+		s.logger.Printf("[bootstrap] no admin users exist and bootstrap is disabled — admin-only operations will be unavailable")
 		return
 	}
 
 	if err := s.createAdmin(ctx); err != nil {
-		log.Printf("[bootstrap] failed to create initial admin: %v", err)
+		s.logger.Printf("[bootstrap] failed to create initial admin: %v", err)
 		return
 	}
-	log.Printf("[bootstrap] initial admin created: %s", s.cfg.AdminEmail)
+	s.logger.Printf("[bootstrap] initial admin created: %s", s.options.AdminEmail)
 }
 
 func (s *Service) createAdmin(ctx context.Context) error {
-	if s.cfg.AdminEmail == "" {
+	if s.options.AdminEmail == "" {
 		return fmt.Errorf("bootstrap.admin_email is required")
 	}
-	if s.cfg.AdminPassword == "" {
+	if s.options.AdminPassword == "" {
 		return fmt.Errorf("bootstrap.admin_password is required")
 	}
-	if len(s.cfg.AdminPassword) < s.minPwdLen {
+	if len(s.options.AdminPassword) < s.minPwdLen {
 		return fmt.Errorf("bootstrap password must be at least %d characters", s.minPwdLen)
 	}
 
-	hash, err := s.hasher.Hash(s.cfg.AdminPassword)
+	hash, err := s.hasher.Hash(s.options.AdminPassword)
 	if err != nil {
 		return fmt.Errorf("hash bootstrap password: %w", err)
 	}
 
-	displayName := s.cfg.AdminDisplayName
+	displayName := s.options.AdminDisplayName
 	if displayName == "" {
 		displayName = "Kish Admin"
 	}
 
 	u := &user.User{
-		Email:        s.cfg.AdminEmail,
+		Email:        s.options.AdminEmail,
 		DisplayName:  displayName,
 		Role:         user.RoleAdmin,
 		Status:       user.StatusActive,
@@ -93,7 +122,7 @@ func (s *Service) createAdmin(ctx context.Context) error {
 	if err != nil {
 		if errors.Is(err, user.ErrEmailConflict) {
 			// Another instance created the admin concurrently; treat as success.
-			log.Printf("[bootstrap] admin email already exists — skipping duplicate creation")
+			s.logger.Printf("[bootstrap] admin email already exists — skipping duplicate creation")
 			return nil
 		}
 		return fmt.Errorf("persist bootstrap admin: %w", err)

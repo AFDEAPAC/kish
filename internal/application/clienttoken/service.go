@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/AFDEAPAC/kish/internal/domain/clienttoken"
-	"github.com/AFDEAPAC/kish/internal/infrastructure/security"
 )
 
 // ErrUnauthorized is returned when a user attempts to manage a token they do not own.
@@ -54,7 +53,16 @@ type TokenDetail struct {
 type Service struct {
 	repo   clienttoken.Repository
 	prefix string
+	codec  tokenCodec
 	cipher tokenCipher
+}
+
+// tokenCodec generates, hashes, and derives display prefixes for raw client
+// tokens without exposing the concrete cryptographic implementation.
+type tokenCodec interface {
+	Generate(prefix string) (string, error)
+	Hash(raw string) string
+	Prefix(raw string) string
 }
 
 type tokenCipher interface {
@@ -64,12 +72,12 @@ type tokenCipher interface {
 
 // NewService constructs a ClientTokenService.
 // prefix is the token prefix (e.g. "kish"), configured via ClientTokenConfig.
-func NewService(repo clienttoken.Repository, prefix string, ciphers ...tokenCipher) *Service {
+func NewService(repo clienttoken.Repository, prefix string, codec tokenCodec, ciphers ...tokenCipher) *Service {
 	var cipher tokenCipher
 	if len(ciphers) > 0 {
 		cipher = ciphers[0]
 	}
-	return &Service{repo: repo, prefix: prefix, cipher: cipher}
+	return &Service{repo: repo, prefix: prefix, codec: codec, cipher: cipher}
 }
 
 // CreateToken generates and persists a new client token.
@@ -90,7 +98,7 @@ func (s *Service) CreateToken(ctx context.Context, in CreateInput) (*CreateResul
 		return nil, fmt.Errorf("at least one scope is required")
 	}
 
-	rawToken, err := security.GenerateOpaqueToken(s.prefix)
+	rawToken, err := s.codec.Generate(s.prefix)
 	if err != nil {
 		return nil, fmt.Errorf("generate token: %w", err)
 	}
@@ -105,8 +113,8 @@ func (s *Service) CreateToken(ctx context.Context, in CreateInput) (*CreateResul
 	t := &clienttoken.ClientToken{
 		UserID:         in.UserID,
 		Name:           in.Name,
-		TokenPrefix:    security.TokenPrefix(rawToken),
-		TokenHash:      security.HashToken(rawToken),
+		TokenPrefix:    s.codec.Prefix(rawToken),
+		TokenHash:      s.codec.Hash(rawToken),
 		EncryptedToken: encryptedToken,
 		Scopes:         in.Scopes,
 		ExpiresAt:      in.ExpiresAt,
@@ -183,7 +191,7 @@ func (s *Service) RevokeToken(ctx context.Context, tokenID, requestingUserID str
 // Returns the token if found and valid; returns an error otherwise.
 // Used by the auth middleware to resolve client token principals.
 func (s *Service) LookupByRawToken(ctx context.Context, rawToken string) (*clienttoken.ClientToken, error) {
-	hash := security.HashToken(rawToken)
+	hash := s.codec.Hash(rawToken)
 	t, err := s.repo.FindByTokenHash(ctx, hash)
 	if err != nil {
 		return nil, err

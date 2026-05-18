@@ -45,14 +45,14 @@ func (s UserStatus) IsValid() bool {
 // It is populated only when reading from the persistence layer and must
 // be cleared before returning a User to the interface layer.
 type User struct {
-	ID           string     `bson:"_id"         json:"id"`
-	Email        string     `bson:"email"       json:"email"`
-	DisplayName  string     `bson:"display_name" json:"display_name"`
-	Role         UserRole   `bson:"role"        json:"role"`
-	Status       UserStatus `bson:"status"      json:"status"`
-	PasswordHash string     `bson:"password_hash" json:"-"`
-	CreatedAt    time.Time  `bson:"created_at"  json:"created_at"`
-	UpdatedAt    time.Time  `bson:"updated_at"  json:"updated_at"`
+	ID           string     `json:"id"`
+	Email        string     `json:"email"`
+	DisplayName  string     `json:"display_name"`
+	Role         UserRole   `json:"role"`
+	Status       UserStatus `json:"status"`
+	PasswordHash string     `json:"-"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
 }
 
 // CreateInput carries the fields required to create a new user.
