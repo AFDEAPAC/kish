@@ -73,18 +73,24 @@ func TestBuildUploadArtifacts_Success(t *testing.T) {
 	envPath := writeTemp(t, dir, "env.json", `{"schema_version":"environment-snapshot/v1"}`)
 	resultPath := writeTemp(t, dir, "result.txt", "output")
 	scriptPath := writeTemp(t, dir, "run.sh", "#!/bin/bash")
+	rawPath := writeTemp(t, dir, "metrics.json", `{"tokens":42}`)
+	logPath := writeTemp(t, dir, "server.log", "started")
+	otherPath := writeTemp(t, dir, "notes.md", "notes")
 
 	flags := uploadFlags{
-		envFile: envPath,
-		result:  resultPath,
-		scripts: []string{scriptPath},
+		envFile:    envPath,
+		result:     resultPath,
+		scripts:    []string{scriptPath},
+		rawFiles:   []string{rawPath},
+		logFiles:   []string{logPath},
+		otherFiles: []string{otherPath},
 	}
 	artifacts, err := buildUploadArtifacts(flags)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(artifacts) != 3 {
-		t.Fatalf("expected 3 artifacts, got %d", len(artifacts))
+	if len(artifacts) != 6 {
+		t.Fatalf("expected 6 artifacts, got %d", len(artifacts))
 	}
 	if artifacts[0].artifactType != "environment" {
 		t.Errorf("expected first artifact type=environment, got %q", artifacts[0].artifactType)
@@ -94,6 +100,28 @@ func TestBuildUploadArtifacts_Success(t *testing.T) {
 	}
 	if artifacts[2].artifactType != "script" {
 		t.Errorf("expected third artifact type=script, got %q", artifacts[2].artifactType)
+	}
+	if artifacts[3].artifactType != "raw" {
+		t.Errorf("expected fourth artifact type=raw, got %q", artifacts[3].artifactType)
+	}
+	if artifacts[4].artifactType != "log" {
+		t.Errorf("expected fifth artifact type=log, got %q", artifacts[4].artifactType)
+	}
+	if artifacts[5].artifactType != "other" {
+		t.Errorf("expected sixth artifact type=other, got %q", artifacts[5].artifactType)
+	}
+}
+
+func TestUploadCommand_ResultIsSingleValueAndAuxiliaryArtifactsRepeat(t *testing.T) {
+	cmd := newUploadCmd()
+
+	if got := cmd.Flags().Lookup("result").Value.Type(); got != "string" {
+		t.Fatalf("expected --result to be a single string flag, got %q", got)
+	}
+	for _, flag := range []string{"script", "raw", "log", "other"} {
+		if got := cmd.Flags().Lookup(flag).Value.Type(); got != "stringArray" {
+			t.Fatalf("expected --%s to be repeatable stringArray, got %q", flag, got)
+		}
 	}
 }
 
@@ -249,6 +277,9 @@ func TestRunUpload_WithoutCaseID_CreatesAndUploads(t *testing.T) {
 	envPath := writeTemp(t, dir, "env.json", `{"schema_version":"environment-snapshot/v1"}`)
 	resultPath := writeTemp(t, dir, "result.txt", "bench output")
 	scriptPath := writeTemp(t, dir, "run.sh", "#!/bin/bash")
+	rawPath := writeTemp(t, dir, "metrics.json", `{"tokens":42}`)
+	logPath := writeTemp(t, dir, "worker.log", "log output")
+	otherPath := writeTemp(t, dir, "notes.md", "notes")
 
 	var postCalled atomic.Bool
 	var putNames []string
@@ -279,10 +310,13 @@ func TestRunUpload_WithoutCaseID_CreatesAndUploads(t *testing.T) {
 	defer srv.Close()
 
 	err := runUpload(uploadFlags{
-		apiBase: srv.URL,
-		envFile: envPath,
-		result:  resultPath,
-		scripts: []string{scriptPath},
+		apiBase:    srv.URL,
+		envFile:    envPath,
+		result:     resultPath,
+		scripts:    []string{scriptPath},
+		rawFiles:   []string{rawPath},
+		logFiles:   []string{logPath},
+		otherFiles: []string{otherPath},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -290,8 +324,8 @@ func TestRunUpload_WithoutCaseID_CreatesAndUploads(t *testing.T) {
 	if !postCalled.Load() {
 		t.Error("expected POST /api/v1/testcases to be called")
 	}
-	if len(putNames) != 3 {
-		t.Errorf("expected 3 PUT artifact calls, got %d: %v", len(putNames), putNames)
+	if len(putNames) != 6 {
+		t.Errorf("expected 6 PUT artifact calls, got %d: %v", len(putNames), putNames)
 	}
 	if putTypes["env.json"] != "environment" {
 		t.Errorf("expected env artifact type header, got %q", putTypes["env.json"])
@@ -302,8 +336,20 @@ func TestRunUpload_WithoutCaseID_CreatesAndUploads(t *testing.T) {
 	if putTypes["run.sh"] != "script" {
 		t.Errorf("expected script artifact type header, got %q", putTypes["run.sh"])
 	}
+	if putTypes["metrics.json"] != "raw" {
+		t.Errorf("expected raw artifact type header, got %q", putTypes["metrics.json"])
+	}
+	if putTypes["worker.log"] != "log" {
+		t.Errorf("expected log artifact type header, got %q", putTypes["worker.log"])
+	}
+	if putTypes["notes.md"] != "other" {
+		t.Errorf("expected other artifact type header, got %q", putTypes["notes.md"])
+	}
 	if putContentTypes["env.json"] != "application/json" {
 		t.Errorf("expected JSON content type for env, got %q", putContentTypes["env.json"])
+	}
+	if putContentTypes["worker.log"] != "text/plain" {
+		t.Errorf("expected text/plain content type for log, got %q", putContentTypes["worker.log"])
 	}
 }
 

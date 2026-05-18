@@ -1,12 +1,15 @@
 # Agent Entry Guide
 
-This file is the entry point for AI agents working in this repository.
+This file is the entry point for AI agents working in this project.
+Paths in this file are relative to this project root.
 
-## Required Reading Order
+## Coding Tasks
 
-Before planning or editing, read the root architecture constitution:
+When the task requires reading, planning, editing, reviewing, or explaining code,
+read these documents before proceeding:
 
-- `docs/development/architecture-spec.md`
+1. `docs/development/architecture-spec.md` — understand this project's design principles and architecture constraints.
+2. `docs/development/coding-style.md` — follow this project's Go coding, comment, error-handling, and testing rules.
 
 ## Commit Messages
 

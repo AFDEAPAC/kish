@@ -4,7 +4,7 @@
 
 本 project 採用 Clean Architecture 作為主要架構原則。實作時必須讓核心業務規則獨立於 framework、database、UI、外部服務與部署細節。
 
-本文整理自 [The Clean Architecture](https://blog.cleancoder.com/uncle-bob/2012/08/13/the-clean-architecture.html)，並搭配本專案 Go 規範 [`docs/development/coding-style.md`](development/coding-style.md) 使用。
+本文整理自 [The Clean Architecture](https://blog.cleancoder.com/uncle-bob/2012/08/13/the-clean-architecture.html)。
 
 ## 核心目標
 
@@ -180,5 +180,3 @@ AI agent 新增或修改本 project 程式碼時必須遵守以下規則：
 - 修改 use case 或 entity 時，必須保持不需要啟動外部系統即可測試。
 - 若需要新增 interface，先確認它是否由使用端需求驅動，而不是為了包裝具體實作。
 - 修改 architecture contract、資料邊界或依賴方向時，必須同步更新文件與測試。
-- 必須遵守 [`docs/development/coding-style.md`](development/coding-style.md) 的 Go 註解、命名、錯誤處理與測試規範。
-

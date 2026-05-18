@@ -16,24 +16,34 @@ import (
 )
 
 type uploadFlags struct {
-	apiBase  string
-	envFile  string
-	result   string
-	scripts  []string
-	caseID   string
-	name     string
-	testType string
-	token    string // --token flag; KISH_API_TOKEN env var is checked as fallback
+	apiBase    string
+	envFile    string
+	result     string
+	scripts    []string
+	rawFiles   []string
+	logFiles   []string
+	otherFiles []string
+	caseID     string
+	name       string
+	testType   string
+	token      string // --token flag; KISH_API_TOKEN env var is checked as fallback
 }
 
 // uploadArtifact represents a single file to be uploaded to the artifact API.
 type uploadArtifact struct {
 	localPath    string
 	artifactName string // filepath.Base(localPath)
-	artifactType string // "environment" | "result" | "script"
+	artifactType string // "environment" | "result" | "script" | "raw" | "log" | "other"
 	contentType  string // optional explicit MIME type; inferred from artifactName when empty
 	content      string
 }
+
+const (
+	maxUploadEnvironmentBytes = 5 * 1024 * 1024
+	maxUploadResultBytes      = 5 * 1024 * 1024
+	maxUploadScriptBytes      = 1 * 1024 * 1024
+	maxUploadAuxiliaryBytes   = 5 * 1024 * 1024
+)
 
 // newUploadCmd constructs the `kish upload` cobra command.
 func newUploadCmd() *cobra.Command {
@@ -64,10 +74,11 @@ Examples:
   export KISH_API_TOKEN=kish_xxx
   export KISH_API_URL=http://127.0.0.1:30151
   kish upload --env env.json --result result.txt --script run.sh \
+              --log server.log --raw metrics.json --other notes.txt \
               --name "sglang test" --type sglang-benchmark
   kish upload --api http://127.0.0.1:30151 \
               --case-id TC-20260505143022-a8f3 \
-              --env env.json --result result.txt --script run.sh`,
+              --env env.json --result result.txt --script run.sh --log worker.log`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runUpload(flags)
 		},
@@ -77,6 +88,9 @@ Examples:
 	cmd.Flags().StringVar(&flags.envFile, "env", "", "Path to environment snapshot JSON (required)")
 	cmd.Flags().StringVar(&flags.result, "result", "", "Path to test result text file (required)")
 	cmd.Flags().StringArrayVar(&flags.scripts, "script", nil, "Path to a test script (repeatable)")
+	cmd.Flags().StringArrayVar(&flags.rawFiles, "raw", nil, "Path to a raw artifact file (repeatable)")
+	cmd.Flags().StringArrayVar(&flags.logFiles, "log", nil, "Path to a log artifact file (repeatable)")
+	cmd.Flags().StringArrayVar(&flags.otherFiles, "other", nil, "Path to an uncategorized artifact file (repeatable)")
 	cmd.Flags().StringVar(&flags.caseID, "case-id", "", "Existing TestCase ID; when set, artifacts are uploaded to this case")
 	cmd.Flags().StringVar(&flags.name, "name", "", "Human-readable name for a newly created TestCase")
 	cmd.Flags().StringVar(&flags.testType, "type", "generic", "Test type for a newly created TestCase (e.g. sglang-benchmark)")
@@ -139,8 +153,8 @@ func runUpload(flags uploadFlags) error {
 func buildUploadArtifacts(flags uploadFlags) ([]uploadArtifact, error) {
 	var artifacts []uploadArtifact
 
-	// Environment snapshot: required, must be valid JSON, max 5 MB.
-	envContent, err := readTextFile(flags.envFile, 5*1024*1024)
+	// Environment snapshot: required, must be valid JSON.
+	envContent, err := readTextFile(flags.envFile, maxUploadEnvironmentBytes)
 	if err != nil {
 		return nil, fmt.Errorf("--env: %w", err)
 	}
@@ -154,8 +168,9 @@ func buildUploadArtifacts(flags uploadFlags) ([]uploadArtifact, error) {
 		content:      envContent,
 	})
 
-	// Test result: required, max 5 MB.
-	resultContent, err := readTextFile(flags.result, 5*1024*1024)
+	// Test result: required and intentionally singular. Additional result-like
+	// files should be uploaded as raw/log/other artifacts.
+	resultContent, err := readTextFile(flags.result, maxUploadResultBytes)
 	if err != nil {
 		return nil, fmt.Errorf("--result: %w", err)
 	}
@@ -166,20 +181,44 @@ func buildUploadArtifacts(flags uploadFlags) ([]uploadArtifact, error) {
 		content:      resultContent,
 	})
 
-	// Scripts: optional, each max 1 MB.
-	for _, path := range flags.scripts {
-		content, err := readTextFile(path, 1*1024*1024)
+	var typedErr error
+	artifacts, typedErr = appendTypedArtifacts(artifacts, flags.scripts, "script", maxUploadScriptBytes, "--script")
+	if typedErr != nil {
+		return nil, typedErr
+	}
+	artifacts, typedErr = appendTypedArtifacts(artifacts, flags.rawFiles, "raw", maxUploadAuxiliaryBytes, "--raw")
+	if typedErr != nil {
+		return nil, typedErr
+	}
+	artifacts, typedErr = appendTypedArtifacts(artifacts, flags.logFiles, "log", maxUploadAuxiliaryBytes, "--log")
+	if typedErr != nil {
+		return nil, typedErr
+	}
+	artifacts, typedErr = appendTypedArtifacts(artifacts, flags.otherFiles, "other", maxUploadAuxiliaryBytes, "--other")
+	if typedErr != nil {
+		return nil, typedErr
+	}
+
+	return artifacts, nil
+}
+
+// appendTypedArtifacts converts repeatable typed flags into artifact upload
+// records while keeping validation errors tied to the originating flag. The
+// caller supplies the API artifact type because script/raw/log/other share the
+// same local-file workflow but have different server-side semantics.
+func appendTypedArtifacts(artifacts []uploadArtifact, paths []string, artifactType string, maxBytes int64, flagName string) ([]uploadArtifact, error) {
+	for _, path := range paths {
+		content, err := readTextFile(path, maxBytes)
 		if err != nil {
-			return nil, fmt.Errorf("--script %q: %w", path, err)
+			return nil, fmt.Errorf("%s %q: %w", flagName, path, err)
 		}
 		artifacts = append(artifacts, uploadArtifact{
 			localPath:    path,
 			artifactName: filepath.Base(path),
-			artifactType: "script",
+			artifactType: artifactType,
 			content:      content,
 		})
 	}
-
 	return artifacts, nil
 }
 

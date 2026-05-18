@@ -294,6 +294,79 @@ func TestArtifactPut_UpdatesTestCaseDetailRefs(t *testing.T) {
 	}
 }
 
+func TestArtifactPut_StoresAuxiliaryArtifactTypesWithoutCanonicalRefs(t *testing.T) {
+	tcRepo := newArtHandlerTCRepo("tc1")
+	srv := newArtTestServerWithRepo(tcRepo)
+	defer srv.Close()
+
+	// Auxiliary artifacts are listed and downloadable, but only environment,
+	// result, and script artifacts update canonical TestCase references.
+	puts := []struct {
+		name        string
+		artifactTyp string
+		contentTyp  string
+		body        string
+	}{
+		{name: "metrics.json", artifactTyp: "raw", contentTyp: "application/json", body: `{"tokens":42}`},
+		{name: "worker.log", artifactTyp: "log", contentTyp: "text/plain", body: "worker started"},
+		{name: "notes.md", artifactTyp: "other", contentTyp: "text/markdown", body: "notes"},
+	}
+	for _, put := range puts {
+		req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/v1/testcases/tc1/artifacts/"+put.name, strings.NewReader(put.body))
+		req.Header.Set("Content-Type", put.contentTyp)
+		req.Header.Set("X-Kish-Artifact-Type", put.artifactTyp)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			t.Fatalf("PUT %s: expected 200, got %d: %s", put.name, resp.StatusCode, body)
+		}
+		var out dto.ArtifactMetaResponse
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			resp.Body.Close()
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if out.ArtifactType != put.artifactTyp {
+			t.Fatalf("PUT %s: expected artifact_type=%s, got %q", put.name, put.artifactTyp, out.ArtifactType)
+		}
+	}
+
+	resp, err := http.Get(srv.URL + "/api/v1/testcases/tc1/artifacts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("GET artifacts: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	var artifacts dto.ListArtifactsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&artifacts); err != nil {
+		t.Fatal(err)
+	}
+	typesByName := make(map[string]string)
+	for _, artifact := range artifacts.Artifacts {
+		typesByName[artifact.ArtifactName] = artifact.ArtifactType
+	}
+	for _, put := range puts {
+		if typesByName[put.name] != put.artifactTyp {
+			t.Fatalf("expected listed %s artifact_type=%s, got %q", put.name, put.artifactTyp, typesByName[put.name])
+		}
+	}
+
+	tc := tcRepo.cases["tc1"]
+	if tc.TestResult != nil {
+		t.Fatalf("raw/log/other must not set test_result, got %#v", tc.TestResult)
+	}
+	if len(tc.TestScripts) != 0 {
+		t.Fatalf("raw/log/other must not set test_scripts, got %#v", tc.TestScripts)
+	}
+}
+
 func TestArtifactPut_TestCaseNotFound(t *testing.T) {
 	srv := newArtTestServer() // no cases
 	defer srv.Close()
@@ -570,6 +643,48 @@ func TestArtifactPut_PublishedScript_Allowed(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected 200 for published script append, got %d", resp.StatusCode)
+	}
+}
+
+func TestArtifactPut_PublishedAuxiliaryTypesAllowed(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		artifactTyp string
+		contentTyp  string
+		body        string
+	}{
+		{name: "metrics.json", artifactTyp: "raw", contentTyp: "application/json", body: `{"tokens":42}`},
+		{name: "worker.log", artifactTyp: "log", contentTyp: "text/plain", body: "worker started"},
+		{name: "notes.md", artifactTyp: "other", contentTyp: "text/markdown", body: "notes"},
+	} {
+		t.Run(tc.artifactTyp, func(t *testing.T) {
+			tcRepo := newArtHandlerTCRepo("tc1")
+			tcRepo.cases["tc1"].Status = testcase.StatusPublished
+			tcRepo.cases["tc1"].Visibility = testcase.VisibilityPublic
+			// Published TestCases keep canonical result/environment immutable,
+			// but auxiliary evidence can still be appended for audit trails.
+			tcRepo.cases["tc1"].TestResult = &testcase.TestResultArtifactRef{ArtifactName: "result.txt"}
+			srv := newArtTestServerWithRepo(tcRepo)
+			defer srv.Close()
+
+			req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/v1/testcases/tc1/artifacts/"+tc.name, strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", tc.contentTyp)
+			req.Header.Set("X-Kish-Artifact-Type", tc.artifactTyp)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("expected 200 for published %s append, got %d", tc.artifactTyp, resp.StatusCode)
+			}
+			if tcRepo.cases["tc1"].TestResult == nil || tcRepo.cases["tc1"].TestResult.ArtifactName != "result.txt" {
+				t.Fatalf("auxiliary artifact must not replace test_result, got %#v", tcRepo.cases["tc1"].TestResult)
+			}
+			if len(tcRepo.cases["tc1"].TestScripts) != 0 {
+				t.Fatalf("auxiliary artifact must not set test_scripts, got %#v", tcRepo.cases["tc1"].TestScripts)
+			}
+		})
 	}
 }
 
