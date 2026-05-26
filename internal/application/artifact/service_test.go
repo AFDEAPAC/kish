@@ -252,8 +252,8 @@ func TestPutArtifact_LinksEnvironmentResultAndScriptToTestCase(t *testing.T) {
 	if _, err := svc.PutArtifact(context.Background(), "tc1", "result.txt", "result", "text/plain", strings.NewReader("output"), -1); err != nil {
 		t.Fatalf("put result: %v", err)
 	}
-	if tcRepo.cases["tc1"].TestResult == nil || tcRepo.cases["tc1"].TestResult.ArtifactName != "result.txt" {
-		t.Fatalf("expected testcase result ref to point at result.txt")
+	if len(tcRepo.cases["tc1"].TestResults) != 1 || tcRepo.cases["tc1"].TestResults[0].ArtifactName != "result.txt" {
+		t.Fatalf("expected testcase result refs to include result.txt, got %#v", tcRepo.cases["tc1"].TestResults)
 	}
 
 	if _, err := svc.PutArtifact(context.Background(), "tc1", "run.sh", "script", "text/x-shellscript", strings.NewReader("#!/bin/sh"), -1); err != nil {
@@ -261,6 +261,32 @@ func TestPutArtifact_LinksEnvironmentResultAndScriptToTestCase(t *testing.T) {
 	}
 	if len(tcRepo.cases["tc1"].TestScripts) != 1 || tcRepo.cases["tc1"].TestScripts[0].ArtifactName != "run.sh" {
 		t.Fatalf("expected testcase script ref to point at run.sh")
+	}
+}
+
+func TestPutArtifact_UpsertsMultipleResultsByName(t *testing.T) {
+	tcRepo := newFakeTCRepo("tc1")
+	svc := appArtifact.NewService(tcRepo, newFakeArtRepo(), newFakeStore())
+
+	if _, err := svc.PutArtifact(context.Background(), "tc1", "result-a.txt", "result", "text/plain", strings.NewReader("a1"), -1); err != nil {
+		t.Fatalf("put first result: %v", err)
+	}
+	if _, err := svc.PutArtifact(context.Background(), "tc1", "result-b.txt", "result", "text/plain", strings.NewReader("b1"), -1); err != nil {
+		t.Fatalf("put second result: %v", err)
+	}
+	if _, err := svc.PutArtifact(context.Background(), "tc1", "result-a.txt", "result", "text/plain", strings.NewReader("a2"), -1); err != nil {
+		t.Fatalf("replace first result: %v", err)
+	}
+
+	results := tcRepo.cases["tc1"].TestResults
+	if len(results) != 2 {
+		t.Fatalf("expected two result refs after append and same-name replace, got %#v", results)
+	}
+	if results[0].ArtifactName != "result-a.txt" || results[0].Size != int64(len("a2")) {
+		t.Fatalf("expected result-a.txt metadata to be replaced, got %#v", results[0])
+	}
+	if results[1].ArtifactName != "result-b.txt" {
+		t.Fatalf("expected result-b.txt to remain present, got %#v", results[1])
 	}
 }
 
@@ -348,7 +374,8 @@ func TestListArtifacts_ReturnsAll(t *testing.T) {
 }
 
 func TestDeleteArtifact_RemovesMetadataAndObject(t *testing.T) {
-	svc := newSvc("tc1")
+	tcRepo := newFakeTCRepo("tc1")
+	svc := appArtifact.NewService(tcRepo, newFakeArtRepo(), newFakeStore())
 	_, _ = svc.PutArtifact(context.Background(), "tc1", "result.txt", "result", "text/plain", strings.NewReader("data"), -1)
 
 	if err := svc.DeleteArtifact(context.Background(), "tc1", "result.txt"); err != nil {
@@ -357,6 +384,9 @@ func TestDeleteArtifact_RemovesMetadataAndObject(t *testing.T) {
 	_, _, err := svc.GetArtifact(context.Background(), "tc1", "result.txt")
 	if !errors.Is(err, domArtifact.ErrNotFound) {
 		t.Errorf("expected ErrNotFound after delete, got %v", err)
+	}
+	if len(tcRepo.cases["tc1"].TestResults) != 0 {
+		t.Fatalf("expected deleted result ref to be unlinked, got %#v", tcRepo.cases["tc1"].TestResults)
 	}
 }
 

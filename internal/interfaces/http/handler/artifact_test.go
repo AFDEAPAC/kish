@@ -286,8 +286,8 @@ func TestArtifactPut_UpdatesTestCaseDetailRefs(t *testing.T) {
 	if out.DefaultEnvironmentScope != "execution" || !out.Environments[0].IsDefault {
 		t.Fatalf("expected execution default environment, got scope=%q refs=%#v", out.DefaultEnvironmentScope, out.Environments)
 	}
-	if out.TestResult == nil || out.TestResult.ArtifactName != "result.txt" {
-		t.Fatalf("expected result ref for result.txt, got %#v", out.TestResult)
+	if len(out.TestResults) != 1 || out.TestResults[0].ArtifactName != "result.txt" {
+		t.Fatalf("expected result ref for result.txt, got %#v", out.TestResults)
 	}
 	if len(out.TestScripts) != 1 || out.TestScripts[0].ArtifactName != "run.sh" {
 		t.Fatalf("expected script ref for run.sh, got %#v", out.TestScripts)
@@ -359,8 +359,8 @@ func TestArtifactPut_StoresAuxiliaryArtifactTypesWithoutCanonicalRefs(t *testing
 	}
 
 	tc := tcRepo.cases["tc1"]
-	if tc.TestResult != nil {
-		t.Fatalf("raw/log/other must not set test_result, got %#v", tc.TestResult)
+	if len(tc.TestResults) != 0 {
+		t.Fatalf("raw/log/other must not set test_results, got %#v", tc.TestResults)
 	}
 	if len(tc.TestScripts) != 0 {
 		t.Fatalf("raw/log/other must not set test_scripts, got %#v", tc.TestScripts)
@@ -663,7 +663,7 @@ func TestArtifactPut_PublishedAuxiliaryTypesAllowed(t *testing.T) {
 			tcRepo.cases["tc1"].Visibility = testcase.VisibilityPublic
 			// Published TestCases keep canonical result/environment immutable,
 			// but auxiliary evidence can still be appended for audit trails.
-			tcRepo.cases["tc1"].TestResult = &testcase.TestResultArtifactRef{ArtifactName: "result.txt"}
+			tcRepo.cases["tc1"].TestResults = []testcase.TestResultArtifactRef{{ArtifactName: "result.txt"}}
 			srv := newArtTestServerWithRepo(tcRepo)
 			defer srv.Close()
 
@@ -678,8 +678,8 @@ func TestArtifactPut_PublishedAuxiliaryTypesAllowed(t *testing.T) {
 			if resp.StatusCode != http.StatusOK {
 				t.Fatalf("expected 200 for published %s append, got %d", tc.artifactTyp, resp.StatusCode)
 			}
-			if tcRepo.cases["tc1"].TestResult == nil || tcRepo.cases["tc1"].TestResult.ArtifactName != "result.txt" {
-				t.Fatalf("auxiliary artifact must not replace test_result, got %#v", tcRepo.cases["tc1"].TestResult)
+			if len(tcRepo.cases["tc1"].TestResults) != 1 || tcRepo.cases["tc1"].TestResults[0].ArtifactName != "result.txt" {
+				t.Fatalf("auxiliary artifact must not replace test_results, got %#v", tcRepo.cases["tc1"].TestResults)
 			}
 			if len(tcRepo.cases["tc1"].TestScripts) != 0 {
 				t.Fatalf("auxiliary artifact must not set test_scripts, got %#v", tcRepo.cases["tc1"].TestScripts)

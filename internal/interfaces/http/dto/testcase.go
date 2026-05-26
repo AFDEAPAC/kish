@@ -86,7 +86,13 @@ type EnvironmentArtifactRefResponse struct {
 	IsDefault       bool      `json:"is_default"`
 }
 
-// TestResultArtifactRefResponse points to the current result artifact.
+// TestResultArtifactRefResponse is the API-level summary of one result
+// artifact attached to a TestCase.
+//
+// A TestCase may expose multiple result references; the parent
+// TestCaseResponse.TestResults slice carries them in upload order and is the
+// only field new clients should consume. The raw payload is downloaded
+// through the artifact API at /api/v1/testcases/{case_id}/artifacts/{name}.
 type TestResultArtifactRefResponse struct {
 	ArtifactName string    `json:"artifact_name"`
 	ContentType  string    `json:"content_type,omitempty"`
@@ -106,6 +112,12 @@ type TestScriptArtifactRefResponse struct {
 
 // TestCaseResponse is the JSON body for GET /api/testcases/{id} and
 // GET /api/v1/testcases/{case_id}.
+//
+// Slice fields without `omitempty` (Environments, TestResults, TestScripts)
+// are intentionally always emitted as JSON arrays — clients may then iterate
+// without nil-checking. TestResults is the multi-result successor of the
+// retired singular `test_result` field; legacy documents are surfaced here
+// as a one-element array by the storage adapter.
 type TestCaseResponse struct {
 	ID                      string                           `json:"id"`
 	Name                    string                           `json:"name,omitempty"`
@@ -118,7 +130,7 @@ type TestCaseResponse struct {
 	OwnerDisplayName        string                           `json:"owner_display_name,omitempty"`
 	Environments            []EnvironmentArtifactRefResponse `json:"environments"`
 	DefaultEnvironmentScope string                           `json:"default_environment_scope,omitempty"`
-	TestResult              *TestResultArtifactRefResponse   `json:"test_result,omitempty"`
+	TestResults             []TestResultArtifactRefResponse  `json:"test_results"`
 	TestScripts             []TestScriptArtifactRefResponse  `json:"test_scripts"`
 	Environment             interface{}                      `json:"environment,omitempty"`
 	ResultArtifact          *ArtifactResponse                `json:"result_artifact,omitempty"`

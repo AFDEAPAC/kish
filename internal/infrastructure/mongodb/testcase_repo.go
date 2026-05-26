@@ -64,6 +64,12 @@ func (r *TestCaseRepository) Create(ctx context.Context, tc *testcase.TestCase) 
 // Update replaces the content fields of an existing TestCase.
 // CreatedAt is preserved from the stored document.
 // Returns testcase.ErrNotFound if the ID does not exist.
+//
+// Every Update also $unsets the legacy singular `test_result` field. The
+// domain only writes `test_results` (the multi-result array), and any rewrite
+// of a document migrated from the singular schema must drop the stale field
+// so subsequent reads cannot reintroduce it through the legacy fallback in
+// fromDocument.
 func (r *TestCaseRepository) Update(ctx context.Context, id string, tc *testcase.TestCase) error {
 	updateFields, err := toUpdateFields(tc)
 	if err != nil {
@@ -71,7 +77,10 @@ func (r *TestCaseRepository) Update(ctx context.Context, id string, tc *testcase
 	}
 
 	filter := bson.D{{Key: "_id", Value: id}}
-	update := bson.D{{Key: "$set", Value: updateFields}}
+	update := bson.D{
+		{Key: "$set", Value: updateFields},
+		{Key: "$unset", Value: bson.D{{Key: "test_result", Value: ""}}},
+	}
 
 	result, err := r.col.UpdateOne(ctx, filter, update)
 	if err != nil {
@@ -85,6 +94,11 @@ func (r *TestCaseRepository) Update(ctx context.Context, id string, tc *testcase
 
 // UpdatePartial applies a metadata patch. Only non-nil patch fields are written.
 // updated_at is always refreshed.
+//
+// Like Update, this call $unsets the legacy `test_result` field on every
+// touched document so the multi-result schema (`test_results`) remains the
+// single source of truth even when a metadata-only PATCH is the first write
+// after migration.
 func (r *TestCaseRepository) UpdatePartial(ctx context.Context, id string, patch testcase.MetadataPatch) error {
 	set := bson.D{{Key: "updated_at", Value: time.Now().UTC()}}
 	if patch.Name != nil {
@@ -104,7 +118,10 @@ func (r *TestCaseRepository) UpdatePartial(ctx context.Context, id string, patch
 	}
 
 	filter := bson.D{{Key: "_id", Value: id}}
-	update := bson.D{{Key: "$set", Value: set}}
+	update := bson.D{
+		{Key: "$set", Value: set},
+		{Key: "$unset", Value: bson.D{{Key: "test_result", Value: ""}}},
+	}
 	result, err := r.col.UpdateOne(ctx, filter, update)
 	if err != nil {
 		return fmt.Errorf("testcase update partial: %w", err)
@@ -327,6 +344,14 @@ func ensureIndexes(ctx context.Context, col *mongo.Collection) error {
 //
 // status, visibility, description, and tags are written for new documents and
 // missing on legacy documents; fromDocument applies safe defaults for missing values.
+//
+// Two fields cover the historical result-reference schemas:
+//
+//   - TestResults (`test_results`) is the current multi-result array and the
+//     only field the application layer writes.
+//   - TestResult (`test_result`) is the older singular field. It is read-only:
+//     fromDocument falls back to it when `test_results` is empty, and every
+//     Update/UpdatePartial $unsets it so it does not silently re-surface.
 type testCaseDocument struct {
 	ID                      string                   `bson:"_id"`
 	Name                    string                   `bson:"name"`
@@ -339,6 +364,7 @@ type testCaseDocument struct {
 	EnvironmentJSON         string                   `bson:"environment_json,omitempty"`
 	Environments            []environmentRefDocument `bson:"environments,omitempty"`
 	DefaultEnvironmentScope string                   `bson:"default_environment_scope,omitempty"`
+	TestResults             []artifactRefDocument    `bson:"test_results,omitempty"`
 	TestResult              *artifactRefDocument     `bson:"test_result,omitempty"`
 	TestScripts             []artifactRefDocument    `bson:"test_scripts,omitempty"`
 	ResultArtifact          inlineArtifactDocument   `bson:"result_artifact,omitempty"`
@@ -401,7 +427,7 @@ func toDocument(tc *testcase.TestCase) (testCaseDocument, error) {
 		OwnerUserID:             tc.OwnerUserID,
 		Environments:            toEnvironmentRefDocuments(tc.Environments),
 		DefaultEnvironmentScope: string(tc.DefaultEnvironmentScope),
-		TestResult:              toArtifactRefDocument(tc.TestResult),
+		TestResults:             toResultRefDocuments(tc.TestResults),
 		TestScripts:             toScriptRefDocuments(tc.TestScripts),
 		CreatedAt:               tc.CreatedAt,
 		UpdatedAt:               tc.UpdatedAt,
@@ -418,7 +444,7 @@ func toUpdateFields(tc *testcase.TestCase) (bson.D, error) {
 		{Key: "visibility", Value: string(tc.Visibility)},
 		{Key: "environments", Value: toEnvironmentRefDocuments(tc.Environments)},
 		{Key: "default_environment_scope", Value: string(tc.DefaultEnvironmentScope)},
-		{Key: "test_result", Value: toArtifactRefDocument(tc.TestResult)},
+		{Key: "test_results", Value: toResultRefDocuments(tc.TestResults)},
 		{Key: "test_scripts", Value: toScriptRefDocuments(tc.TestScripts)},
 		{Key: "updated_at", Value: tc.UpdatedAt},
 	}, nil
@@ -442,17 +468,18 @@ func toEnvironmentRefDocuments(refs []testcase.EnvironmentArtifactRef) []environ
 	return out
 }
 
-func toArtifactRefDocument(ref *testcase.TestResultArtifactRef) *artifactRefDocument {
-	if ref == nil {
-		return nil
+func toResultRefDocuments(refs []testcase.TestResultArtifactRef) []artifactRefDocument {
+	out := make([]artifactRefDocument, 0, len(refs))
+	for _, ref := range refs {
+		out = append(out, artifactRefDocument{
+			ArtifactName: ref.ArtifactName,
+			ContentType:  ref.ContentType,
+			Size:         ref.Size,
+			SHA256:       ref.SHA256,
+			UploadedAt:   ref.UploadedAt,
+		})
 	}
-	return &artifactRefDocument{
-		ArtifactName: ref.ArtifactName,
-		ContentType:  ref.ContentType,
-		Size:         ref.Size,
-		SHA256:       ref.SHA256,
-		UploadedAt:   ref.UploadedAt,
-	}
+	return out
 }
 
 func toScriptRefDocuments(refs []testcase.TestScriptArtifactRef) []artifactRefDocument {
@@ -513,6 +540,17 @@ func fromDocument(doc testCaseDocument) (*testcase.TestCase, error) {
 			}
 		}
 	}
+	// Legacy fallback: documents written before the multi-result schema
+	// stored exactly one entry under `test_result`. Treat that singular
+	// reference as a one-element list so the domain sees a uniform shape.
+	// We do not rewrite the document here; the next Update/UpdatePartial
+	// will $unset the legacy field and persist `test_results`.
+	resultRefs := fromResultRefDocuments(doc.TestResults)
+	if len(resultRefs) == 0 && doc.TestResult != nil {
+		if legacyRef := fromArtifactRefDocument(doc.TestResult); legacyRef != nil {
+			resultRefs = []testcase.TestResultArtifactRef{*legacyRef}
+		}
+	}
 
 	return &testcase.TestCase{
 		ID:                      doc.ID,
@@ -526,7 +564,7 @@ func fromDocument(doc testCaseDocument) (*testcase.TestCase, error) {
 		Environment:             env,
 		Environments:            envRefs,
 		DefaultEnvironmentScope: defaultScope,
-		TestResult:              fromArtifactRefDocument(doc.TestResult),
+		TestResults:             resultRefs,
 		TestScripts:             fromScriptRefDocuments(doc.TestScripts),
 		ResultArtifact:          fromArtifactDocument(doc.ResultArtifact),
 		ScriptArtifacts:         scripts,
@@ -557,6 +595,10 @@ func fromEnvironmentRefDocuments(docs []environmentRefDocument) []testcase.Envir
 	return out
 }
 
+// fromArtifactRefDocument converts the legacy singular `test_result` field
+// into a domain TestResultArtifactRef. It exists solely to support read-time
+// migration in fromDocument; new write paths must go through
+// toResultRefDocuments / fromResultRefDocuments instead.
 func fromArtifactRefDocument(doc *artifactRefDocument) *testcase.TestResultArtifactRef {
 	if doc == nil {
 		return nil
@@ -568,6 +610,20 @@ func fromArtifactRefDocument(doc *artifactRefDocument) *testcase.TestResultArtif
 		SHA256:       doc.SHA256,
 		UploadedAt:   doc.UploadedAt,
 	}
+}
+
+func fromResultRefDocuments(docs []artifactRefDocument) []testcase.TestResultArtifactRef {
+	out := make([]testcase.TestResultArtifactRef, 0, len(docs))
+	for _, doc := range docs {
+		out = append(out, testcase.TestResultArtifactRef{
+			ArtifactName: doc.ArtifactName,
+			ContentType:  doc.ContentType,
+			Size:         doc.Size,
+			SHA256:       doc.SHA256,
+			UploadedAt:   doc.UploadedAt,
+		})
+	}
+	return out
 }
 
 func fromScriptRefDocuments(docs []artifactRefDocument) []testcase.TestScriptArtifactRef {

@@ -158,7 +158,9 @@ func (s *Service) ListArtifacts(ctx context.Context, caseID string) ([]*domartif
 // the metadata is still removed so the system stays consistent.
 //
 // Deletion of result and environment artifacts is rejected once the parent
-// TestCase has been published, mirroring the upload immutability rule.
+// TestCase has been published, mirroring the upload immutability rule. Draft
+// result deletes also remove the corresponding TestCase result reference so
+// readers do not see stale canonical state.
 func (s *Service) DeleteArtifact(ctx context.Context, caseID, artifactName string) error {
 	if err := domartifact.ValidateArtifactName(artifactName); err != nil {
 		return err
@@ -172,8 +174,9 @@ func (s *Service) DeleteArtifact(ctx context.Context, caseID, artifactName strin
 		return err
 	}
 
+	var tc *testcase.TestCase
 	if isImmutableOnPublished(meta.ArtifactType) {
-		tc, err := s.tcRepo.FindByID(ctx, caseID)
+		tc, err = s.tcRepo.FindByID(ctx, caseID)
 		if err != nil && !errors.Is(err, testcase.ErrNotFound) {
 			return err
 		}
@@ -187,7 +190,10 @@ func (s *Service) DeleteArtifact(ctx context.Context, caseID, artifactName strin
 		return fmt.Errorf("delete artifact content: %w", err)
 	}
 
-	return s.artRepo.Delete(ctx, caseID, artifactName)
+	if err := s.artRepo.Delete(ctx, caseID, artifactName); err != nil {
+		return err
+	}
+	return s.unlinkDeletedArtifactFromTestCase(ctx, tc, meta)
 }
 
 // canWritePublishedArtifact reports whether an artifact upload may mutate a
@@ -218,6 +224,41 @@ func isImmutableOnPublished(t domartifact.ArtifactType) bool {
 	return false
 }
 
+// unlinkDeletedArtifactFromTestCase removes the deleted artifact's reference
+// from the parent TestCase aggregate.
+//
+// Only result artifacts carry a canonical TestCase-level reference; for other
+// artifact types this is a no-op. The caller-supplied tc is the TestCase that
+// was already fetched for the publish-immutability check (when applicable);
+// when nil, this helper re-fetches by CaseID. A missing TestCase is treated
+// as "already gone" — callers should not fail an otherwise-successful delete
+// because the parent vanished between checks. Update is only issued when an
+// entry actually changed, to avoid spurious writes when re-deleting a result
+// whose link was previously cleaned up.
+func (s *Service) unlinkDeletedArtifactFromTestCase(ctx context.Context, tc *testcase.TestCase, meta *domartifact.Artifact) error {
+	if meta.ArtifactType != domartifact.ArtifactTypeResult {
+		return nil
+	}
+	if tc == nil {
+		var err error
+		tc, err = s.tcRepo.FindByID(ctx, meta.CaseID)
+		if err != nil {
+			if errors.Is(err, testcase.ErrNotFound) {
+				return nil
+			}
+			return err
+		}
+	}
+	if !tc.RemoveTestResultArtifact(meta.ArtifactName) {
+		return nil
+	}
+	tc.UpdatedAt = time.Now().UTC()
+	if err := s.tcRepo.Update(ctx, tc.ID, tc); err != nil {
+		return fmt.Errorf("unlink deleted result from testcase: %w", err)
+	}
+	return nil
+}
+
 // FindTestCase returns the parent TestCase for visibility checks performed by
 // HTTP handlers (e.g. anonymous artifact reads must verify the parent is
 // public-published). Returns testcase.ErrNotFound when the case does not exist.
@@ -241,6 +282,16 @@ func (s *Service) CheckOwnership(ctx context.Context, caseID, ownerUserID string
 	return nil
 }
 
+// linkArtifactToTestCase records the just-uploaded artifact in the parent
+// TestCase aggregate so reads see canonical metadata without scanning the
+// artifact collection.
+//
+// Publish-time immutability is already enforced by PutArtifact before this
+// helper runs; here we may safely upsert. Each canonical type maps to its
+// own slice on TestCase and is keyed by ArtifactName, so re-uploading the
+// same name refreshes metadata in place. Non-canonical types (raw/log/other)
+// are intentionally left out of the aggregate — they are listed via the
+// artifact API and do not need a TestCase-level summary.
 func (s *Service) linkArtifactToTestCase(
 	ctx context.Context,
 	tc *testcase.TestCase,
@@ -264,7 +315,7 @@ func (s *Service) linkArtifactToTestCase(
 			UploadedAt:      a.UpdatedAt,
 		})
 	case domartifact.ArtifactTypeResult:
-		tc.SetTestResultArtifact(testcase.TestResultArtifactRef{
+		tc.UpsertTestResultArtifact(testcase.TestResultArtifactRef{
 			ArtifactName: a.ArtifactName,
 			ContentType:  a.ContentType,
 			Size:         a.Size,

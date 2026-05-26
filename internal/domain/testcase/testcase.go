@@ -115,9 +115,15 @@ type EnvironmentArtifactRef struct {
 	UploadedAt      time.Time                    `json:"uploaded_at,omitempty"`
 }
 
-// TestResultArtifactRef is the current result artifact for a TestCase.
-// Replacing a result uploads a new artifact body and points this reference at
-// the latest artifact metadata; it never mutates raw content inline.
+// TestResultArtifactRef is a TestCase-level pointer to one result artifact.
+//
+// A TestCase may carry multiple result references (1..N). The slice is keyed by
+// ArtifactName via UpsertTestResultArtifact, so re-uploading the same name
+// refreshes the metadata in place rather than producing duplicate entries.
+// Once the parent TestCase is published, the whole TestResults slice is
+// immutable: the application layer rejects further uploads, replacements, and
+// deletions of result artifacts. The raw payload always lives in the artifact
+// ObjectStore; this struct only carries metadata needed by TestCase reads.
 type TestResultArtifactRef struct {
 	ArtifactName string    `json:"artifact_name"`
 	ContentType  string    `json:"content_type,omitempty"`
@@ -141,9 +147,13 @@ type TestScriptArtifactRef struct {
 //
 // Starting from the artifact API, a TestCase holds metadata plus first-class
 // references to canonical artifacts. File content is stored via the artifact
-// ObjectStore and referenced through the artifact metadata collection. The
-// inline ResultArtifact / ScriptArtifacts fields may be present on documents
-// created before the artifact API was introduced.
+// ObjectStore and referenced through the artifact metadata collection.
+//
+// Canonical result artifacts live in TestResults as an ordered, name-keyed
+// slice managed exclusively through UpsertTestResultArtifact and
+// RemoveTestResultArtifact. The inline ResultArtifact / ScriptArtifacts
+// fields may still be present on documents created before the artifact API
+// was introduced; new code must not write them.
 type TestCase struct {
 	// ID is the server-generated unique identifier (format: TC-YYYYMMDDHHMMSS-xxxx).
 	ID string `json:"id"`
@@ -182,8 +192,13 @@ type TestCase struct {
 	// detail views. It is set to execution when an execution snapshot exists.
 	DefaultEnvironmentScope environment.EnvironmentScope `json:"default_environment_scope,omitempty"`
 
-	// TestResult is the current result artifact reference for v1 uploads.
-	TestResult *TestResultArtifactRef `json:"test_result,omitempty"`
+	// TestResults is the canonical, append-ordered list of result artifact
+	// references uploaded through the v1 artifact API. Entries are keyed by
+	// ArtifactName (see UpsertTestResultArtifact / RemoveTestResultArtifact)
+	// and become immutable once Status=Published. Read-only fallback from the
+	// legacy singular `test_result` document field happens in the MongoDB
+	// adapter; new code must read and write through TestResults only.
+	TestResults []TestResultArtifactRef `json:"test_results,omitempty"`
 
 	// TestScripts are script artifact references for v1 uploads.
 	TestScripts []TestScriptArtifactRef `json:"test_scripts,omitempty"`
@@ -228,9 +243,41 @@ func (t *TestCase) SetEnvironmentArtifact(ref EnvironmentArtifactRef) {
 	t.refreshDefaultEnvironmentScope()
 }
 
-// SetTestResultArtifact records the current result artifact reference.
-func (t *TestCase) SetTestResultArtifact(ref TestResultArtifactRef) {
-	t.TestResult = &ref
+// UpsertTestResultArtifact records ref in TestResults, keyed by ArtifactName.
+//
+// The first upload of a name appends, preserving upload order. Re-uploading
+// the same name replaces the existing entry in place so its index (the
+// observable order on the API surface) is stable across overwrites. Callers
+// must not invoke this on a published TestCase; the application layer is
+// responsible for enforcing that invariant before mutating the aggregate.
+func (t *TestCase) UpsertTestResultArtifact(ref TestResultArtifactRef) {
+	for i := range t.TestResults {
+		if t.TestResults[i].ArtifactName == ref.ArtifactName {
+			t.TestResults[i] = ref
+			return
+		}
+	}
+	t.TestResults = append(t.TestResults, ref)
+}
+
+// RemoveTestResultArtifact unlinks the result reference identified by
+// artifactName from TestResults.
+//
+// It is the in-aggregate counterpart of an artifact delete: the artifact
+// service calls it after removing the underlying ObjectStore content and
+// metadata so the TestCase no longer points at vanished data. The boolean
+// return lets callers skip a redundant repository write when no entry
+// matched (e.g. legacy documents that never linked a result). The application
+// layer must only invoke this while Status=Draft; published TestCases have
+// immutable result sets.
+func (t *TestCase) RemoveTestResultArtifact(artifactName string) bool {
+	for i := range t.TestResults {
+		if t.TestResults[i].ArtifactName == artifactName {
+			t.TestResults = append(t.TestResults[:i], t.TestResults[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 // UpsertTestScriptArtifact appends a script reference or updates the existing
@@ -254,6 +301,17 @@ func (t *TestCase) HasExecutionEnvironment() bool {
 		}
 	}
 	return false
+}
+
+// HasTestResult reports whether the TestCase has at least one canonical result
+// artifact reference in TestResults.
+//
+// Legacy inline ResultArtifact data is intentionally ignored: callers asking
+// "does this TestCase have a result on the artifact API surface" want a clean
+// "no" for pre-artifact-API documents so they can be re-uploaded before being
+// treated as complete.
+func (t *TestCase) HasTestResult() bool {
+	return len(t.TestResults) > 0
 }
 
 func (t *TestCase) refreshDefaultEnvironmentScope() {

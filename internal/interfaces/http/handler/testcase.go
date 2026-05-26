@@ -356,6 +356,10 @@ func toTestCaseResponse(tc *testcase.TestCase, ownerDisplayName string) dto.Test
 	for _, ref := range tc.TestScripts {
 		testScripts = append(testScripts, toTestScriptArtifactRefResponse(ref))
 	}
+	testResults := make([]dto.TestResultArtifactRefResponse, 0, len(tc.TestResults))
+	for _, ref := range tc.TestResults {
+		testResults = append(testResults, toTestResultArtifactRefResponse(ref))
+	}
 	return dto.TestCaseResponse{
 		ID:                      tc.ID,
 		Name:                    tc.Name,
@@ -368,7 +372,7 @@ func toTestCaseResponse(tc *testcase.TestCase, ownerDisplayName string) dto.Test
 		OwnerDisplayName:        ownerDisplayName,
 		Environments:            envRefs,
 		DefaultEnvironmentScope: string(tc.DefaultEnvironmentScope),
-		TestResult:              toTestResultArtifactRefResponse(tc.TestResult),
+		TestResults:             testResults,
 		TestScripts:             testScripts,
 		Environment:             tc.Environment,
 		ResultArtifact:          toLegacyArtifactResponse(tc.ResultArtifact),
@@ -393,11 +397,8 @@ func toEnvironmentArtifactRefResponse(ref testcase.EnvironmentArtifactRef, defau
 	}
 }
 
-func toTestResultArtifactRefResponse(ref *testcase.TestResultArtifactRef) *dto.TestResultArtifactRefResponse {
-	if ref == nil {
-		return nil
-	}
-	return &dto.TestResultArtifactRefResponse{
+func toTestResultArtifactRefResponse(ref testcase.TestResultArtifactRef) dto.TestResultArtifactRefResponse {
+	return dto.TestResultArtifactRefResponse{
 		ArtifactName: ref.ArtifactName,
 		ContentType:  ref.ContentType,
 		Size:         ref.Size,

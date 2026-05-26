@@ -18,7 +18,7 @@ import (
 type uploadFlags struct {
 	apiBase    string
 	envFile    string
-	result     string
+	results    []string
 	scripts    []string
 	rawFiles   []string
 	logFiles   []string
@@ -73,7 +73,7 @@ Examples:
   kish upload --api http://127.0.0.1:30151 --token kish_xxx --env env.json --result result.txt
   export KISH_API_TOKEN=kish_xxx
   export KISH_API_URL=http://127.0.0.1:30151
-  kish upload --env env.json --result result.txt --script run.sh \
+  kish upload --env env.json --result result.txt --result summary.json --script run.sh \
               --log server.log --raw metrics.json --other notes.txt \
               --name "sglang test" --type sglang-benchmark
   kish upload --api http://127.0.0.1:30151 \
@@ -86,7 +86,7 @@ Examples:
 
 	cmd.Flags().StringVar(&flags.apiBase, "api", "", "Base URL of the kish API server (overrides KISH_API_URL)")
 	cmd.Flags().StringVar(&flags.envFile, "env", "", "Path to environment snapshot JSON (required)")
-	cmd.Flags().StringVar(&flags.result, "result", "", "Path to test result text file (required)")
+	cmd.Flags().StringArrayVar(&flags.results, "result", nil, "Path to a test result file (repeatable; at least one required)")
 	cmd.Flags().StringArrayVar(&flags.scripts, "script", nil, "Path to a test script (repeatable)")
 	cmd.Flags().StringArrayVar(&flags.rawFiles, "raw", nil, "Path to a raw artifact file (repeatable)")
 	cmd.Flags().StringArrayVar(&flags.logFiles, "log", nil, "Path to a log artifact file (repeatable)")
@@ -168,18 +168,11 @@ func buildUploadArtifacts(flags uploadFlags) ([]uploadArtifact, error) {
 		content:      envContent,
 	})
 
-	// Test result: required and intentionally singular. Additional result-like
-	// files should be uploaded as raw/log/other artifacts.
-	resultContent, err := readTextFile(flags.result, maxUploadResultBytes)
-	if err != nil {
-		return nil, fmt.Errorf("--result: %w", err)
+	var resultErr error
+	artifacts, resultErr = appendResultArtifacts(artifacts, flags.results)
+	if resultErr != nil {
+		return nil, resultErr
 	}
-	artifacts = append(artifacts, uploadArtifact{
-		localPath:    flags.result,
-		artifactName: filepath.Base(flags.result),
-		artifactType: "result",
-		content:      resultContent,
-	})
 
 	var typedErr error
 	artifacts, typedErr = appendTypedArtifacts(artifacts, flags.scripts, "script", maxUploadScriptBytes, "--script")
@@ -199,6 +192,42 @@ func buildUploadArtifacts(flags uploadFlags) ([]uploadArtifact, error) {
 		return nil, typedErr
 	}
 
+	return artifacts, nil
+}
+
+// appendResultArtifacts converts the repeatable `--result` flag values into
+// result-typed upload records.
+//
+// The CLI surface treats `--result` as required: at least one file must be
+// provided so the resulting TestCase carries the canonical benchmark output.
+// Each artifact_name on the API is derived from filepath.Base, so two
+// `--result` paths that share the same basename would overwrite each other
+// on the server; this helper rejects that locally with a clear error before
+// any network call. Validation order matches flag order, which is the same
+// order the server will see uploads in.
+func appendResultArtifacts(artifacts []uploadArtifact, paths []string) ([]uploadArtifact, error) {
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("--result: at least one result file is required")
+	}
+	seen := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		artifactName := filepath.Base(path)
+		if _, ok := seen[artifactName]; ok {
+			return nil, fmt.Errorf("--result: duplicate artifact name %q", artifactName)
+		}
+		seen[artifactName] = struct{}{}
+
+		content, err := readTextFile(path, maxUploadResultBytes)
+		if err != nil {
+			return nil, fmt.Errorf("--result %q: %w", path, err)
+		}
+		artifacts = append(artifacts, uploadArtifact{
+			localPath:    path,
+			artifactName: artifactName,
+			artifactType: "result",
+			content:      content,
+		})
+	}
 	return artifacts, nil
 }
 

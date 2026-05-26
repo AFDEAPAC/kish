@@ -69,7 +69,7 @@ func TestToDocumentOmitsLegacyArtifactSlotsForNewWrites(t *testing.T) {
 			Scope:        environment.ScopeExecution,
 			ArtifactName: "env.json",
 		}},
-		TestResult: &testcase.TestResultArtifactRef{ArtifactName: "result.txt"},
+		TestResults: []testcase.TestResultArtifactRef{{ArtifactName: "result.txt"}},
 		TestScripts: []testcase.TestScriptArtifactRef{{
 			ArtifactName: "run.sh",
 		}},
@@ -82,5 +82,35 @@ func TestToDocumentOmitsLegacyArtifactSlotsForNewWrites(t *testing.T) {
 	}
 	if doc.ResultArtifact.Filename != "" || len(doc.ScriptArtifacts) != 0 {
 		t.Fatalf("expected new document not to write legacy artifacts, got result=%#v scripts=%#v", doc.ResultArtifact, doc.ScriptArtifacts)
+	}
+	if doc.TestResult != nil {
+		t.Fatalf("expected new document not to write legacy test_result, got %#v", doc.TestResult)
+	}
+	if len(doc.TestResults) != 1 || doc.TestResults[0].ArtifactName != "result.txt" {
+		t.Fatalf("expected test_results to contain result.txt, got %#v", doc.TestResults)
+	}
+}
+
+func TestFromDocumentReadsLegacyTestResultAsResults(t *testing.T) {
+	tc, err := fromDocument(testCaseDocument{
+		ID:         "TC-legacy-result",
+		TestType:   "generic",
+		Status:     string(testcase.StatusDraft),
+		Visibility: string(testcase.VisibilityPrivate),
+		TestResult: &artifactRefDocument{
+			ArtifactName: "result.txt",
+			ContentType:  "text/plain",
+			Size:         12,
+			SHA256:       "abc123",
+		},
+	})
+	if err != nil {
+		t.Fatalf("fromDocument: %v", err)
+	}
+	if len(tc.TestResults) != 1 {
+		t.Fatalf("expected one migrated result ref, got %#v", tc.TestResults)
+	}
+	if tc.TestResults[0].ArtifactName != "result.txt" || tc.TestResults[0].SHA256 != "abc123" {
+		t.Fatalf("expected legacy test_result to migrate, got %#v", tc.TestResults[0])
 	}
 }

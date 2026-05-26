@@ -72,6 +72,7 @@ func TestBuildUploadArtifacts_Success(t *testing.T) {
 	dir := t.TempDir()
 	envPath := writeTemp(t, dir, "env.json", `{"schema_version":"environment-snapshot/v1"}`)
 	resultPath := writeTemp(t, dir, "result.txt", "output")
+	summaryPath := writeTemp(t, dir, "summary.json", `{"ok":true}`)
 	scriptPath := writeTemp(t, dir, "run.sh", "#!/bin/bash")
 	rawPath := writeTemp(t, dir, "metrics.json", `{"tokens":42}`)
 	logPath := writeTemp(t, dir, "server.log", "started")
@@ -79,7 +80,7 @@ func TestBuildUploadArtifacts_Success(t *testing.T) {
 
 	flags := uploadFlags{
 		envFile:    envPath,
-		result:     resultPath,
+		results:    []string{resultPath, summaryPath},
 		scripts:    []string{scriptPath},
 		rawFiles:   []string{rawPath},
 		logFiles:   []string{logPath},
@@ -89,8 +90,8 @@ func TestBuildUploadArtifacts_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(artifacts) != 6 {
-		t.Fatalf("expected 6 artifacts, got %d", len(artifacts))
+	if len(artifacts) != 7 {
+		t.Fatalf("expected 7 artifacts, got %d", len(artifacts))
 	}
 	if artifacts[0].artifactType != "environment" {
 		t.Errorf("expected first artifact type=environment, got %q", artifacts[0].artifactType)
@@ -98,25 +99,28 @@ func TestBuildUploadArtifacts_Success(t *testing.T) {
 	if artifacts[1].artifactType != "result" {
 		t.Errorf("expected second artifact type=result, got %q", artifacts[1].artifactType)
 	}
-	if artifacts[2].artifactType != "script" {
-		t.Errorf("expected third artifact type=script, got %q", artifacts[2].artifactType)
+	if artifacts[2].artifactType != "result" {
+		t.Errorf("expected third artifact type=result, got %q", artifacts[2].artifactType)
 	}
-	if artifacts[3].artifactType != "raw" {
-		t.Errorf("expected fourth artifact type=raw, got %q", artifacts[3].artifactType)
+	if artifacts[3].artifactType != "script" {
+		t.Errorf("expected fourth artifact type=script, got %q", artifacts[3].artifactType)
 	}
-	if artifacts[4].artifactType != "log" {
-		t.Errorf("expected fifth artifact type=log, got %q", artifacts[4].artifactType)
+	if artifacts[4].artifactType != "raw" {
+		t.Errorf("expected fifth artifact type=raw, got %q", artifacts[4].artifactType)
 	}
-	if artifacts[5].artifactType != "other" {
-		t.Errorf("expected sixth artifact type=other, got %q", artifacts[5].artifactType)
+	if artifacts[5].artifactType != "log" {
+		t.Errorf("expected sixth artifact type=log, got %q", artifacts[5].artifactType)
+	}
+	if artifacts[6].artifactType != "other" {
+		t.Errorf("expected seventh artifact type=other, got %q", artifacts[6].artifactType)
 	}
 }
 
-func TestUploadCommand_ResultIsSingleValueAndAuxiliaryArtifactsRepeat(t *testing.T) {
+func TestUploadCommand_ResultAndAuxiliaryArtifactsRepeat(t *testing.T) {
 	cmd := newUploadCmd()
 
-	if got := cmd.Flags().Lookup("result").Value.Type(); got != "string" {
-		t.Fatalf("expected --result to be a single string flag, got %q", got)
+	if got := cmd.Flags().Lookup("result").Value.Type(); got != "stringArray" {
+		t.Fatalf("expected --result to be repeatable stringArray, got %q", got)
 	}
 	for _, flag := range []string{"script", "raw", "log", "other"} {
 		if got := cmd.Flags().Lookup(flag).Value.Type(); got != "stringArray" {
@@ -130,7 +134,7 @@ func TestBuildUploadArtifacts_InvalidEnvJSON(t *testing.T) {
 	envPath := writeTemp(t, dir, "env.json", `not json`)
 	resultPath := writeTemp(t, dir, "result.txt", "output")
 
-	_, err := buildUploadArtifacts(uploadFlags{envFile: envPath, result: resultPath})
+	_, err := buildUploadArtifacts(uploadFlags{envFile: envPath, results: []string{resultPath}})
 	if err == nil {
 		t.Error("expected error for invalid JSON env file")
 	}
@@ -144,10 +148,29 @@ func TestBuildUploadArtifacts_MissingResult(t *testing.T) {
 	envPath := writeTemp(t, dir, "env.json", `{}`)
 	_, err := buildUploadArtifacts(uploadFlags{
 		envFile: envPath,
-		result:  filepath.Join(dir, "nonexistent.txt"),
+		results: []string{filepath.Join(dir, "nonexistent.txt")},
 	})
 	if err == nil {
 		t.Error("expected error for missing result file")
+	}
+}
+
+func TestBuildUploadArtifacts_DuplicateResultBasename(t *testing.T) {
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+	envPath := writeTemp(t, dirA, "env.json", `{}`)
+	resultA := writeTemp(t, dirA, "result.txt", "a")
+	resultB := writeTemp(t, dirB, "result.txt", "b")
+
+	_, err := buildUploadArtifacts(uploadFlags{
+		envFile: envPath,
+		results: []string{resultA, resultB},
+	})
+	if err == nil {
+		t.Fatal("expected duplicate result artifact name error")
+	}
+	if !strings.Contains(err.Error(), `duplicate artifact name "result.txt"`) {
+		t.Fatalf("expected duplicate result artifact name error, got %v", err)
 	}
 }
 
@@ -156,7 +179,7 @@ func TestBuildUploadArtifacts_ArtifactNamesAreBasenames(t *testing.T) {
 	envPath := writeTemp(t, dir, "env.json", `{}`)
 	resultPath := writeTemp(t, dir, "result.txt", "data")
 
-	artifacts, err := buildUploadArtifacts(uploadFlags{envFile: envPath, result: resultPath})
+	artifacts, err := buildUploadArtifacts(uploadFlags{envFile: envPath, results: []string{resultPath}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -205,7 +228,7 @@ func TestRunUpload_RequiresAPIBaseFromFlagOrEnv(t *testing.T) {
 	envPath := writeTemp(t, dir, "env.json", `{}`)
 	resultPath := writeTemp(t, dir, "result.txt", "data")
 
-	err := runUpload(uploadFlags{envFile: envPath, result: resultPath})
+	err := runUpload(uploadFlags{envFile: envPath, results: []string{resultPath}})
 	if err == nil || !strings.Contains(err.Error(), "KISH_API_URL") {
 		t.Fatalf("expected missing API URL error, got %v", err)
 	}
@@ -276,6 +299,7 @@ func TestRunUpload_WithoutCaseID_CreatesAndUploads(t *testing.T) {
 	dir := t.TempDir()
 	envPath := writeTemp(t, dir, "env.json", `{"schema_version":"environment-snapshot/v1"}`)
 	resultPath := writeTemp(t, dir, "result.txt", "bench output")
+	summaryPath := writeTemp(t, dir, "summary.json", `{"score":1}`)
 	scriptPath := writeTemp(t, dir, "run.sh", "#!/bin/bash")
 	rawPath := writeTemp(t, dir, "metrics.json", `{"tokens":42}`)
 	logPath := writeTemp(t, dir, "worker.log", "log output")
@@ -312,7 +336,7 @@ func TestRunUpload_WithoutCaseID_CreatesAndUploads(t *testing.T) {
 	err := runUpload(uploadFlags{
 		apiBase:    srv.URL,
 		envFile:    envPath,
-		result:     resultPath,
+		results:    []string{resultPath, summaryPath},
 		scripts:    []string{scriptPath},
 		rawFiles:   []string{rawPath},
 		logFiles:   []string{logPath},
@@ -324,14 +348,17 @@ func TestRunUpload_WithoutCaseID_CreatesAndUploads(t *testing.T) {
 	if !postCalled.Load() {
 		t.Error("expected POST /api/v1/testcases to be called")
 	}
-	if len(putNames) != 6 {
-		t.Errorf("expected 6 PUT artifact calls, got %d: %v", len(putNames), putNames)
+	if len(putNames) != 7 {
+		t.Errorf("expected 7 PUT artifact calls, got %d: %v", len(putNames), putNames)
 	}
 	if putTypes["env.json"] != "environment" {
 		t.Errorf("expected env artifact type header, got %q", putTypes["env.json"])
 	}
 	if putTypes["result.txt"] != "result" {
 		t.Errorf("expected result artifact type header, got %q", putTypes["result.txt"])
+	}
+	if putTypes["summary.json"] != "result" {
+		t.Errorf("expected second result artifact type header, got %q", putTypes["summary.json"])
 	}
 	if putTypes["run.sh"] != "script" {
 		t.Errorf("expected script artifact type header, got %q", putTypes["run.sh"])
@@ -382,7 +409,7 @@ func TestRunUpload_WithCaseID_SkipsCreate(t *testing.T) {
 		apiBase: srv.URL,
 		caseID:  "TC-existing-abc",
 		envFile: envPath,
-		result:  resultPath,
+		results: []string{resultPath},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -411,7 +438,7 @@ func TestRunUpload_LocalValidationFailure_NoAPICalled(t *testing.T) {
 	err := runUpload(uploadFlags{
 		apiBase: srv.URL,
 		envFile: envPath,
-		result:  resultPath,
+		results: []string{resultPath},
 	})
 	if err == nil {
 		t.Error("expected error for invalid env JSON")
