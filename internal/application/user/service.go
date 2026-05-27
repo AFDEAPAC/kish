@@ -36,19 +36,38 @@ type PasswordHasher interface {
 	VerifyPassword(plaintext, hash string) (bool, error)
 }
 
-// Service provides user management operations.
+// Service orchestrates user CRUD, password change, and account disable.
+//
+// Service owns the last-admin invariant (guardLastAdmin) and the rule that
+// PasswordHash never leaves the service boundary in plain form: every
+// returned user has PasswordHash cleared. Authorization (admin-only,
+// JWT-only) is enforced upstream by the HTTP middleware and routes;
+// callers reaching the service are trusted to have already been
+// authenticated and authorised.
 type Service struct {
 	repo      user.Repository
 	hasher    PasswordHasher
 	minPwdLen int
 }
 
-// NewService constructs a UserService.
+// NewService wires Service. minPwdLen is the deployment-configured minimum
+// password length applied to CreateUser and ChangePassword; values below
+// the configured floor are rejected at validation time.
 func NewService(repo user.Repository, hasher PasswordHasher, minPwdLen int) *Service {
 	return &Service{repo: repo, hasher: hasher, minPwdLen: minPwdLen}
 }
 
-// CreateUser validates input, hashes the password, and persists a new user.
+// CreateUser validates input, hashes the password, and persists a new
+// active user.
+//
+// CreateUser returns user.ErrEmailConflict when the email is already taken.
+// Validation errors (empty email, invalid role, short password) are wrapped
+// fmt.Errorf values intended for direct exposure to admin callers. Other
+// errors represent infrastructure failures.
+//
+// The returned user has PasswordHash cleared. Callers must not log
+// in.Password and must trust the configured PasswordHasher to keep the
+// concrete algorithm opaque.
 func (s *Service) CreateUser(ctx context.Context, in CreateInput) (*user.User, error) {
 	if in.Email == "" {
 		return nil, fmt.Errorf("email is required")
@@ -120,9 +139,23 @@ func (s *Service) UpdateUser(ctx context.Context, id string, input user.UpdateIn
 	return updated, nil
 }
 
-// DisableUser sets the user's status to disabled and revoking all sessions is
-// handled by the auth service when needed.
-// Prevents disabling the last admin.
+// DisableUser flips the user's status to disabled. Returns ErrLastAdmin if
+// disabling would leave the system with zero admins.
+//
+// DisableUser does NOT revoke the user's existing refresh sessions. Any
+// previously issued refresh token continues to verify against the session
+// store until it expires; auth.Service.Refresh re-checks user status on
+// every rotation and rejects disabled accounts at that point. JWT access
+// tokens already in flight remain valid until their exp claim because the
+// project does not maintain a JWT revocation list. Callers that need an
+// immediate, hard sign-out must additionally:
+//   - revoke or delete the user's session records, and
+//   - rely on access-token TTL being short enough to absorb the gap.
+//
+// Keeping session revocation out of this method preserves a clean
+// Clean-Architecture boundary: user.Service does not import session
+// infrastructure. The HTTP admin handler (the only DisableUser caller) is
+// responsible for the cleanup step.
 func (s *Service) DisableUser(ctx context.Context, id string) (*user.User, error) {
 	return s.UpdateUser(ctx, id, user.UpdateInput{Status: user.StatusDisabled})
 }
@@ -166,7 +199,6 @@ func (s *Service) guardLastAdmin(ctx context.Context, id string, input user.Upda
 		return nil
 	}
 
-	// Check whether this user is currently an admin.
 	existing, err := s.repo.FindByID(ctx, id)
 	if err != nil {
 		return err
@@ -175,7 +207,6 @@ func (s *Service) guardLastAdmin(ctx context.Context, id string, input user.Upda
 		return nil
 	}
 
-	// Count remaining admins.
 	count, err := s.repo.CountByRole(ctx, user.RoleAdmin)
 	if err != nil {
 		return fmt.Errorf("count admins: %w", err)

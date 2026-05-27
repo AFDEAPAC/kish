@@ -30,7 +30,6 @@ func NewSystemPackageCollector(runner command.Runner, outputDir string) *SystemP
 	return &SystemPackageCollector{runner: runner, outputDir: outputDir}
 }
 
-// Name returns the collector identifier.
 func (c *SystemPackageCollector) Name() string { return "system_packages" }
 
 // Collect detects the available package manager and collects the package list.

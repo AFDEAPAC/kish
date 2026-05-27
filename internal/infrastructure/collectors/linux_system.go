@@ -1,6 +1,19 @@
 // Package collectors provides infrastructure-layer implementations of the
 // environment.Collector interface. Each file implements one collector that
 // gathers a specific category of environment data.
+//
+// Cross-cutting assumptions:
+//   - Collectors target Linux hosts. Behaviour on macOS or Windows is
+//     undefined; the kish detect CLI is the only intended caller and it is
+//     packaged as a Linux binary.
+//   - External commands are invoked through a command.Runner port so the
+//     CLI can inject the default runner (5-second per-command timeout via
+//     command.DefaultCommandTimeout) and tests can inject a fake.
+//   - Failures are reported as warnings or partial/failed CollectorStatus
+//     rather than Go errors; the snapshot must still serialise successfully
+//     even when individual collectors cannot gather data.
+//   - Collectors must not retain state across Collect calls; the runner and
+//     output directory are the only fields that survive between invocations.
 package collectors
 
 import (
@@ -24,7 +37,9 @@ type LinuxSystemCollector struct {
 	osReleasePath string
 }
 
-// NewLinuxSystemCollector constructs a LinuxSystemCollector.
+// NewLinuxSystemCollector constructs a LinuxSystemCollector wired to the
+// default /etc/os-release path. Use SetOSReleasePath in tests to point at a
+// fixture.
 func NewLinuxSystemCollector(runner command.Runner) *LinuxSystemCollector {
 	return &LinuxSystemCollector{runner: runner, osReleasePath: osReleasePath}
 }
@@ -35,7 +50,6 @@ func (c *LinuxSystemCollector) SetOSReleasePath(path string) {
 	c.osReleasePath = path
 }
 
-// Name returns the collector identifier.
 func (c *LinuxSystemCollector) Name() string { return "linux_system" }
 
 // Collect gathers OS, kernel, architecture, and hostname information.
@@ -46,13 +60,11 @@ func (c *LinuxSystemCollector) Collect(ctx context.Context) environment.Collecto
 	var warnings []string
 	anyFailed := false
 
-	// Parse /etc/os-release for OS identity fields.
 	osFields, err := parseOSRelease(c.osReleasePath)
 	if err != nil {
 		warnings = append(warnings, "could not read "+c.osReleasePath+": "+err.Error())
 		anyFailed = true
 	} else {
-		// Map well-known os-release keys to our domain data keys.
 		if v, ok := osFields["NAME"]; ok {
 			data["os.name"] = v
 		}
@@ -67,7 +79,6 @@ func (c *LinuxSystemCollector) Collect(ctx context.Context) environment.Collecto
 		}
 	}
 
-	// Collect kernel information from uname.
 	type unameCmd struct {
 		flag string
 		key  string
@@ -88,7 +99,6 @@ func (c *LinuxSystemCollector) Collect(ctx context.Context) environment.Collecto
 		data[u.key] = strings.TrimSpace(result.Stdout)
 	}
 
-	// Collect hostname.
 	hostname, err := os.Hostname()
 	if err != nil {
 		// Fallback to the hostname command.

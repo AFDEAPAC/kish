@@ -30,7 +30,6 @@ const (
 	ArtifactTypeOther ArtifactType = "other"
 )
 
-// validArtifactTypes is the set of accepted ArtifactType values.
 var validArtifactTypes = map[ArtifactType]bool{
 	ArtifactTypeEnvironment: true,
 	ArtifactTypeResult:      true,
@@ -63,7 +62,12 @@ type Artifact struct {
 	// ContentType is the MIME type of the stored file.
 	ContentType string
 
-	// Size is the byte length of the stored content.
+	// Size is the artifact's content length in bytes. It is set by the
+	// upload pipeline from the bytes actually written to the ObjectStore,
+	// so a mismatch with the Content-Length header at upload time is
+	// possible (the artifact service records the observed value). Readers
+	// should treat Size as advisory and rely on streaming end-of-data
+	// rather than seek-by-length operations.
 	Size int64
 
 	// SHA256 is the hex-encoded SHA-256 digest of the stored content.
@@ -80,8 +84,9 @@ type Artifact struct {
 	UpdatedAt time.Time
 }
 
-// StorageKeyFor generates the canonical storage key for an artifact.
-// The key format is: testcases/{caseID}/artifacts/{artifactName}
+// StorageKeyFor generates the internal object-store key for an artifact.
+// Callers must validate artifactName before calling; this function does not
+// escape path separators or otherwise sanitize the key segments.
 func StorageKeyFor(caseID, artifactName string) string {
 	return "testcases/" + caseID + "/artifacts/" + artifactName
 }

@@ -8,20 +8,24 @@ import (
 	"github.com/AFDEAPAC/kish/internal/interfaces/http/middleware"
 )
 
-// RegisterRoutes registers all API routes on the provided ServeMux.
-// Go 1.22+ method+pattern routing is used so no external router is required.
+// RegisterRoutes registers all API routes on the provided ServeMux using
+// Go 1.22+ method+pattern routing.
 //
-// Auth middleware is applied globally so every handler can inspect the principal.
-// Individual endpoint guards (RequireAuthenticated, RequireAdmin, RequireJWT)
-// are applied per-route where needed.
+// Auth middleware is not applied here. The caller is expected to wrap the
+// finished mux with WrapWithAuth so every request has a principal attached
+// before any handler runs. Per-route guards (RequireAuthenticated,
+// RequireAdmin, RequireJWT) decide whether an authenticated principal is
+// required and which authentication methods are accepted.
 //
-// TestCase metadata routes are under /api/v1/.
-// Artifact routes are under /api/v1/testcases/{case_id}/artifacts/.
-// Auth routes are under /api/auth/.
-// User management routes are under /api/users/ (admin-only).
-// Current-user routes are under /api/me/.
-// The legacy GET /api/testcases/{id} route is kept for backward-compatible reads,
-// but is now visibility-restricted (anonymous reads see public-published only).
+// Route prefixes:
+//   - /api/auth/        login, refresh, logout, current principal
+//   - /api/users/       admin-only user management
+//   - /api/me/          current-user profile and client-token management
+//   - /api/v1/          TestCase and Artifact APIs
+//
+// GET /api/testcases/{id} is kept as a legacy backward-compatible read.
+// Anonymous callers see public-published TestCases only; the visibility
+// filter lives in the handler/service layer.
 func RegisterRoutes(
 	mux *http.ServeMux,
 	health *handler.HealthHandler,
@@ -31,7 +35,6 @@ func RegisterRoutes(
 	userH *handler.UserHandler,
 	meH *handler.MeHandler,
 	ctH *handler.ClientTokenHandler,
-	authMiddleware func(http.Handler) http.Handler,
 ) {
 	mux.HandleFunc("GET /healthz", health.Check)
 
@@ -70,8 +73,6 @@ func RegisterRoutes(
 	mux.HandleFunc("POST /api/v1/testcases/{case_id}/publish", middleware.RequireAuthenticated(tc.Publish))
 	mux.HandleFunc("DELETE /api/v1/testcases/{case_id}", middleware.RequireAuthenticated(tc.Delete))
 
-	// Legacy GET kept for backward compatibility with pre-v1 clients.
-	// Visibility is now enforced; anonymous reads only succeed for public-published.
 	mux.HandleFunc("GET /api/testcases/{id}", tc.Get)
 
 	// Artifact API (v1) — reads enforce visibility against the parent TestCase;
@@ -83,7 +84,11 @@ func RegisterRoutes(
 }
 
 // WrapWithAuth wraps the mux with the auth middleware so every request has
-// a principal attached to its context before reaching any handler.
+// a principal attached to its context before reaching any handler. Per-route
+// guards registered by RegisterRoutes rely on this wrapping; calling
+// RegisterRoutes without also wrapping with WrapWithAuth (or an equivalent
+// middleware that populates the request context) will cause guards to reject
+// every request as unauthenticated.
 func WrapWithAuth(mux http.Handler, authMiddleware func(http.Handler) http.Handler) http.Handler {
 	return authMiddleware(mux)
 }

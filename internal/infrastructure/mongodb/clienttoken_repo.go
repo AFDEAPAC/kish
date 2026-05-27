@@ -69,12 +69,26 @@ func clientTokenFromDocument(doc clientTokenDocument) *clienttoken.ClientToken {
 	}
 }
 
-// ClientTokenRepository implements domain/clienttoken.Repository using MongoDB.
+// ClientTokenRepository implements domain/clienttoken.Repository against the
+// "client_tokens" collection.
+//
+// Index assumptions established by ensureClientTokenIndexes:
+//   - token_hash for authentication lookups via FindByTokenHash. Not unique
+//     in the schema; uniqueness is enforced by the random raw-token
+//     generator, not by the database.
+//   - user_id for ListByUserID.
+//   - expires_at and created_at for sorting and future housekeeping queries.
+//
+// The EncryptedToken field is stored verbatim when the application layer
+// supplies a non-empty value; this repository does not validate the
+// ciphertext.
 type ClientTokenRepository struct {
 	col *mongo.Collection
 }
 
-// NewClientTokenRepository constructs a ClientTokenRepository and ensures indexes exist.
+// NewClientTokenRepository binds ClientTokenRepository to the configured
+// database and ensures the indexes documented on ClientTokenRepository
+// exist. ctx bounds the startup index-creation phase only.
 func NewClientTokenRepository(ctx context.Context, db *mongo.Database) (*ClientTokenRepository, error) {
 	col := db.Collection(collectionClientTokens)
 	if err := ensureClientTokenIndexes(ctx, col); err != nil {
@@ -126,7 +140,8 @@ func (r *ClientTokenRepository) FindByID(ctx context.Context, id string) (*clien
 	return clientTokenFromDocument(doc), nil
 }
 
-// FindByTokenHash returns the client token whose token_hash matches hash.
+// FindByTokenHash returns the client token whose token_hash matches hash,
+// or clienttoken.ErrNotFound when no document matches.
 func (r *ClientTokenRepository) FindByTokenHash(ctx context.Context, hash string) (*clienttoken.ClientToken, error) {
 	filter := bson.D{{Key: "token_hash", Value: hash}}
 	var doc clientTokenDocument

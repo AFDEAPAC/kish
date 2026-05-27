@@ -277,9 +277,7 @@ func buildListFilter(f testcase.ListFilter) bson.D {
 	default: // all
 		switch {
 		case f.CallerIsAdmin:
-			// admin sees everything; no extra filter
 		case f.CallerUserID != "":
-			// developer: public-published OR owned
 			filter = append(filter, bson.E{Key: "$or", Value: bson.A{
 				bson.D{
 					{Key: "status", Value: string(testcase.StatusPublished)},
@@ -288,7 +286,6 @@ func buildListFilter(f testcase.ListFilter) bson.D {
 				bson.D{{Key: "owner_user_id", Value: f.CallerUserID}},
 			}})
 		default:
-			// anonymous: public-published only
 			filter = append(filter,
 				bson.E{Key: "status", Value: string(testcase.StatusPublished)},
 				bson.E{Key: "visibility", Value: string(testcase.VisibilityPublic)},
@@ -652,7 +649,6 @@ func fromArtifactDocument(a inlineArtifactDocument) testcase.Artifact {
 	}
 }
 
-// marshalEnvJSON serialises an EnvironmentSnapshot to a JSON string for storage.
 func marshalEnvJSON(env *environment.EnvironmentSnapshot) (string, error) {
 	if env == nil {
 		return "", nil
@@ -664,7 +660,6 @@ func marshalEnvJSON(env *environment.EnvironmentSnapshot) (string, error) {
 	return string(b), nil
 }
 
-// unmarshalEnvJSON deserialises a JSON string back to an EnvironmentSnapshot.
 func unmarshalEnvJSON(s string) (*environment.EnvironmentSnapshot, error) {
 	if s == "" {
 		return nil, nil

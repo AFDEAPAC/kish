@@ -26,30 +26,48 @@ import (
 	"github.com/AFDEAPAC/kish/internal/domain/testcase"
 )
 
-// Service coordinates TestCase metadata creation, retrieval, listing, update,
-// and the publish workflow.
+// Service orchestrates TestCase metadata create, retrieve, list, update,
+// publish, and delete flows.
+//
+// Service owns every TestCase invariant documented on the package: status
+// transitions, ownership checks, draft/published mutability. Authorization
+// is performed inside the service (canManage, CanRead) so HTTP handlers
+// stay free of business rules. All ports are injected; the service can be
+// exercised without a real database, object store, or HTTP layer.
 type Service struct {
 	repo    testcase.Repository
 	cleanup DeleteCleanup
 }
 
-// DeleteCleanup carries optional dependencies used to remove artifact content
-// and metadata as part of deleting a TestCase.
+// DeleteCleanup carries optional ports used by DeleteTestCase to remove
+// artifact content and metadata. Both fields may be zero — production wires
+// them in cli/api.go, while tests that only exercise metadata flows leave
+// them unset.
 type DeleteCleanup struct {
 	ArtifactRepo artifactRepository
 	Store        objectStore
 }
 
+// artifactRepository is the subset of the artifact repository that
+// DeleteTestCase needs. Defined here so testcase.Service does not import the
+// full artifact application package and so the application layer stays
+// decoupled from infrastructure types. Implementations must respect
+// ctx cancellation.
 type artifactRepository interface {
 	List(ctx context.Context, caseID string) ([]*domartifact.Artifact, error)
 	Delete(ctx context.Context, caseID, artifactName string) error
 }
 
+// objectStore is the subset of the artifact ObjectStore needed for cleanup.
+// Implementations must be idempotent on missing keys so a partial delete
+// can be safely retried.
 type objectStore interface {
 	DeleteObject(ctx context.Context, key string) error
 }
 
-// NewService constructs a Service with the provided repository.
+// NewService wires Service. The variadic cleanup parameter is treated as
+// "zero or one DeleteCleanup": providing more than one is undefined and only
+// the first is used. Tests that do not exercise delete typically omit it.
 func NewService(repo testcase.Repository, cleanup ...DeleteCleanup) *Service {
 	var c DeleteCleanup
 	if len(cleanup) > 0 {
@@ -203,8 +221,22 @@ func (s *Service) Publish(
 	return s.repo.FindByID(ctx, id)
 }
 
-// DeleteTestCase removes a TestCase and its artifact records/content.
-// Ownership is checked before any destructive work is performed.
+// DeleteTestCase removes a TestCase together with its artifact records and
+// stored object content, in this fixed order: per-artifact object delete,
+// then per-artifact metadata delete, then the TestCase document itself.
+//
+// The workflow is not transactional. If a per-artifact step fails the
+// remaining artifacts and the TestCase document are left intact and a
+// partial state will be observable by other readers; callers can retry the
+// delete safely because every step downstream is either idempotent or
+// guarded by FindByID. Returns testcase.ErrForbidden when callerUserID
+// neither owns the case nor has admin rights, testcase.ErrNotFound when
+// the case does not exist.
+//
+// When the optional DeleteCleanup ports are not wired (e.g. a test using
+// only metadata flows) the artifact-cleanup phase is skipped; the
+// underlying object store may retain orphaned blobs and operators are
+// expected to garbage-collect them out of band.
 func (s *Service) DeleteTestCase(ctx context.Context, id, callerUserID string, callerIsAdmin bool) error {
 	if id == "" {
 		return errors.New("testcase id is required")

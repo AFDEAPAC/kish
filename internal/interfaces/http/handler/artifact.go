@@ -82,7 +82,6 @@ func (h *ArtifactHandler) Put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enforce ownership for non-admin users: look up the TestCase owner before upload.
 	if p.Role != user.RoleAdmin {
 		if err := h.svc.CheckOwnership(r.Context(), caseID, p.UserID); err != nil {
 			if errors.Is(err, testcase.ErrNotFound) {
@@ -194,7 +193,6 @@ func (h *ArtifactHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enforce ownership for non-admin users.
 	if p.Role != user.RoleAdmin {
 		if err := h.svc.CheckOwnership(r.Context(), caseID, p.UserID); err != nil {
 			if errors.Is(err, testcase.ErrNotFound) {

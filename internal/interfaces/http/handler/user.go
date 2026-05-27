@@ -10,17 +10,32 @@ import (
 	"github.com/AFDEAPAC/kish/internal/interfaces/http/dto"
 )
 
-// UserHandler handles admin-only user management endpoints.
+// UserHandler adapts the user application service into the admin-only
+// /api/users endpoints.
+//
+// Every route handled here is registered behind RequireAdmin in routes.go,
+// which enforces JWT-only authentication and the admin role. The handler
+// trusts that precondition and never re-verifies it.
+//
+// Domain/application errors map to HTTP statuses as follows:
+//   - user.ErrEmailConflict        -> 409 (Create)
+//   - appUser.ErrLastAdmin         -> 409 (Update, Disable)
+//   - user.ErrNotFound             -> 404
+//   - validation errors (wrapped)  -> 400
+//   - anything else                -> 500
 type UserHandler struct {
 	svc *appUser.Service
 }
 
-// NewUserHandler constructs a UserHandler.
+// NewUserHandler wires UserHandler with the user application service.
 func NewUserHandler(svc *appUser.Service) *UserHandler {
 	return &UserHandler{svc: svc}
 }
 
-// Create handles POST /api/users.
+// Create provisions a new active user. 201 with the created user on
+// success. 409 when the email is already taken. 400 for validation errors
+// (invalid role, short password). The password field is plaintext over TLS
+// and must not be logged anywhere downstream.
 func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req dto.CreateUserRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -46,7 +61,10 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, dto.UserFromDomain(created))
 }
 
-// List handles GET /api/users.
+// List returns every user (admin view). 200 with the full list (password
+// hashes already cleared by the application layer). 500 if the repository
+// is unavailable. No pagination today; the user collection is expected to
+// stay small.
 func (h *UserHandler) List(w http.ResponseWriter, r *http.Request) {
 	users, err := h.svc.ListUsers(r.Context())
 	if err != nil {
@@ -61,7 +79,8 @@ func (h *UserHandler) List(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// Get handles GET /api/users/{user_id}.
+// Get returns a single user by id. 200 on success, 400 when user_id is
+// missing, 404 when the user does not exist, 500 otherwise.
 func (h *UserHandler) Get(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("user_id")
 	if id == "" {
@@ -82,7 +101,11 @@ func (h *UserHandler) Get(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, dto.UserFromDomain(u))
 }
 
-// Update handles PATCH /api/users/{user_id}.
+// Update applies a non-zero patch to the user identified by user_id. 200
+// on success. 409 (ErrLastAdmin) when the patch would demote or disable
+// the last admin. 404 when the user does not exist. 400 for malformed
+// bodies or invalid field values. Password is never changed through this
+// route; admins reset passwords via a separate flow (not yet implemented).
 func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("user_id")
 	if id == "" {
@@ -118,7 +141,12 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, dto.UserFromDomain(updated))
 }
 
-// Disable handles DELETE /api/users/{user_id} (soft disable).
+// Disable soft-disables the user identified by user_id. 200 on success
+// (the response body confirms the disabled state). 409 when disabling
+// would leave the system with no admin. 404 when the user does not exist.
+// Disable does NOT revoke the user's refresh sessions; see
+// appUser.Service.DisableUser for the rationale and the follow-up that
+// admins must perform when an immediate hard sign-out is required.
 func (h *UserHandler) Disable(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("user_id")
 	if id == "" {

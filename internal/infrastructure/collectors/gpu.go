@@ -23,12 +23,12 @@ type GPUCollector struct {
 	runner command.Runner
 }
 
-// NewGPUCollector constructs a GPUCollector.
+// NewGPUCollector constructs a GPUCollector that calls rocm-smi/lspci
+// through runner.
 func NewGPUCollector(runner command.Runner) *GPUCollector {
 	return &GPUCollector{runner: runner}
 }
 
-// Name returns the collector identifier.
 func (c *GPUCollector) Name() string { return "gpu" }
 
 // Collect detects GPUs using rocm-smi or lspci.
@@ -37,7 +37,6 @@ func (c *GPUCollector) Collect(ctx context.Context) environment.CollectorResult 
 	data := make(map[string]string)
 	var warnings []string
 
-	// Try rocm-smi first.
 	if _, err := c.runner.LookPath("rocm-smi"); err == nil {
 		result, runErr := c.runner.Run(ctx, "rocm-smi", "--showproductname")
 		if runErr == nil && result.ExitCode == 0 {
@@ -55,7 +54,6 @@ func (c *GPUCollector) Collect(ctx context.Context) environment.CollectorResult 
 		warnings = append(warnings, "rocm-smi --showproductname failed, falling back to lspci")
 	}
 
-	// Fallback: lspci.
 	if _, err := c.runner.LookPath("lspci"); err == nil {
 		result, runErr := c.runner.Run(ctx, "lspci")
 		if runErr == nil {
@@ -83,7 +81,6 @@ func (c *GPUCollector) Collect(ctx context.Context) environment.CollectorResult 
 		warnings = append(warnings, "lspci not found on PATH")
 	}
 
-	// No GPUs detected.
 	data["gpu.count"] = "0"
 	data["gpu.vendor"] = "unknown"
 
@@ -207,7 +204,6 @@ func populateGPUSummary(devices []environment.GPUDevice, data map[string]string)
 
 	data["gpu.count"] = strconv.Itoa(len(devices))
 
-	// Use the first device's vendor as the summary vendor.
 	vendor := devices[0].Vendor
 	data["gpu.vendor"] = vendor
 }

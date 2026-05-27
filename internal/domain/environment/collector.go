@@ -29,10 +29,8 @@ type CollectorResult struct {
 	// Status is the outcome of this collector run.
 	Status CollectorStatus
 
-	// StartedAt is when the collector began.
 	StartedAt time.Time
 
-	// FinishedAt is when the collector finished.
 	FinishedAt time.Time
 
 	// Data holds normalized key-value facts collected by this collector.

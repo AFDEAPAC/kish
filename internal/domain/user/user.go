@@ -29,8 +29,13 @@ const (
 	// StatusActive means the user can authenticate and perform allowed operations.
 	StatusActive UserStatus = "active"
 
-	// StatusDisabled means the user cannot log in, use refresh tokens, or use client tokens.
-	// All existing sessions are revoked when a user is disabled.
+	// StatusDisabled means the user cannot log in. Refresh attempts and
+	// new client-token authentications are rejected by the auth use case
+	// when it re-checks status. Existing JWT access tokens remain valid
+	// until their exp claim; the application layer does not maintain a
+	// JWT revocation list. Session records are NOT automatically revoked
+	// on disable — see application/user.Service.DisableUser for the
+	// rationale and the follow-up the admin handler must perform.
 	StatusDisabled UserStatus = "disabled"
 )
 
@@ -55,7 +60,11 @@ type User struct {
 	UpdatedAt    time.Time  `json:"updated_at"`
 }
 
-// CreateInput carries the fields required to create a new user.
+// CreateInput is the domain-layer payload for creating a new User. The
+// caller (typically the application user service) is responsible for
+// hashing the plaintext password before populating PasswordHash; the
+// domain never sees raw passwords. Role must be a value accepted by
+// UserRole.IsValid.
 type CreateInput struct {
 	Email        string
 	DisplayName  string
@@ -63,8 +72,10 @@ type CreateInput struct {
 	PasswordHash string
 }
 
-// UpdateInput carries the fields that can be updated on an existing user.
-// Zero values are ignored; only non-empty fields are applied.
+// UpdateInput is the partial-update payload accepted by Repository.Update.
+// Zero values mean "leave the existing field alone"; callers cannot clear
+// a field through UpdateInput. PasswordHash is intentionally absent so the
+// only path that changes the password is Repository.UpdatePasswordHash.
 type UpdateInput struct {
 	DisplayName string
 	Role        UserRole

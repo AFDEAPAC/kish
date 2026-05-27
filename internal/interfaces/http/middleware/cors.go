@@ -8,8 +8,19 @@ import (
 )
 
 // CORS returns middleware that handles browser cross-origin requests when
-// direct dashboard-to-API deployments need it. Same-origin reverse proxy
-// deployments should leave CORS disabled.
+// a deployment serves the dashboard from a different origin than the API.
+// Same-origin reverse-proxy deployments should leave CORS disabled in
+// config (`cors.enabled = false`) so no cross-origin headers leak.
+//
+// cfg comes from the cors.* section of the application config. The middleware
+// reads AllowedOrigins, AllowedMethods, AllowedHeaders, and AllowCredentials
+// once at construction; runtime config reload is not supported.
+//
+// Security note: when AllowCredentials is true the wildcard "*" origin is
+// intentionally not honoured because the browser will reject the combination
+// anyway and silently dropping the header is safer than returning credentials
+// to an unknown origin (see originAllowed). Operators that need both must
+// list every concrete origin explicitly.
 func CORS(cfg config.CORSConfig) func(http.Handler) http.Handler {
 	allowedOrigins := make(map[string]struct{}, len(cfg.AllowedOrigins))
 	for _, origin := range cfg.AllowedOrigins {

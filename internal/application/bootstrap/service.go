@@ -39,7 +39,14 @@ type noopLogger struct{}
 
 func (noopLogger) Printf(string, ...any) {}
 
-// Service handles the one-time bootstrap admin creation.
+// Service performs at-most-once initial admin creation.
+//
+// Service is invoked from main during API startup, before the HTTP server
+// begins accepting requests, and is intentionally fire-and-forget: any
+// failure to create the admin is logged but never returned, so a
+// misconfigured bootstrap section cannot block the rest of the API from
+// starting up. Two instances racing on first start are reconciled via
+// user.ErrEmailConflict (see createAdmin).
 type Service struct {
 	userRepo  user.Repository
 	hasher    PasswordHasher
@@ -48,7 +55,9 @@ type Service struct {
 	minPwdLen int
 }
 
-// NewService constructs a BootstrapService.
+// NewService wires Service with its ports and configuration. loggers is
+// variadic so the call site can omit logging in tests; only the first
+// non-nil entry is used and a no-op logger is the default.
 func NewService(userRepo user.Repository, hasher PasswordHasher, options Options, minPwdLen int, loggers ...Logger) *Service {
 	logger := Logger(noopLogger{})
 	if len(loggers) > 0 && loggers[0] != nil {

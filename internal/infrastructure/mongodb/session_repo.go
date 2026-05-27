@@ -50,12 +50,25 @@ func sessionFromDocument(doc sessionDocument) *session.Session {
 	}
 }
 
-// SessionRepository implements domain/session.Repository using MongoDB.
+// SessionRepository implements domain/session.Repository against the
+// "sessions" collection.
+//
+// Index assumptions established by ensureSessionIndexes:
+//   - token_hash for refresh-token lookup during refresh and logout.
+//   - user_id to support RevokeAllByUserID on disable / hard sign-out.
+//   - expires_at for housekeeping queries; the project does not currently
+//     run a TTL index because revoked sessions are kept for audit.
+//
+// Sessions store only the SHA-256 hash of the refresh token. Like other
+// repositories in this package every method is a single-document operation
+// and no multi-document transaction is used.
 type SessionRepository struct {
 	col *mongo.Collection
 }
 
-// NewSessionRepository constructs a SessionRepository and ensures the required indexes exist.
+// NewSessionRepository binds SessionRepository to the configured database
+// and ensures the indexes documented on SessionRepository exist. ctx bounds
+// the startup index-creation phase only.
 func NewSessionRepository(ctx context.Context, db *mongo.Database) (*SessionRepository, error) {
 	col := db.Collection(collectionSessions)
 	if err := ensureSessionIndexes(ctx, col); err != nil {
@@ -104,7 +117,8 @@ func (r *SessionRepository) FindByTokenHash(ctx context.Context, hash string) (*
 	return sessionFromDocument(doc), nil
 }
 
-// Revoke marks the session identified by id as revoked.
+// Revoke marks the session identified by id as revoked. Missing sessions are
+// treated as already revoked so logout and refresh cleanup remain idempotent.
 func (r *SessionRepository) Revoke(ctx context.Context, id string) error {
 	now := time.Now().UTC()
 	filter := bson.D{{Key: "_id", Value: id}}

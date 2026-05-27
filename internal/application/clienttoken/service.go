@@ -1,8 +1,21 @@
-// Package clienttoken provides the application-layer service for client token lifecycle.
+// Package clienttoken provides the application-layer service for client
+// token lifecycle: create, list, reveal, revoke, and authenticated lookup.
 //
-// ClientTokenService handles creation, listing, and revocation of client tokens.
-// It enforces token storage rules, valid scopes, and ownership checks for token
-// management operations.
+// Token storage rules enforced here:
+//   - Only the SHA-256 hash (TokenHash) is required for lookup.
+//   - The raw token is returned to the owner exactly once at creation.
+//   - When a token encryption key is configured the raw token is also
+//     persisted encrypted under that key so the owner can reveal it later;
+//     without that key the token is hash-only and reveal returns
+//     ErrTokenContentUnavailable.
+//
+// Authorization rules enforced here:
+//   - Reveal and Revoke require the requesting user to own the token.
+//   - CreateInput.UserID must already be a trusted, authenticated user id
+//     supplied by the interface layer; Service does not authenticate.
+//   - LookupByRawToken is used by the HTTP auth middleware to resolve a
+//     bearer credential into a principal and must never return a revoked or
+//     expired token.
 package clienttoken
 
 import (
@@ -49,7 +62,13 @@ type TokenDetail struct {
 	RawToken *string
 }
 
-// Service provides client token management operations.
+// Service orchestrates client-token lifecycle and bearer-token lookup.
+//
+// Service is the only component that ever sees raw client tokens between
+// generation and the owner's reveal flow. It uses two cryptographic ports:
+// tokenCodec for one-way hashing and display-prefix derivation, and an
+// optional tokenCipher for owner-reveal encryption. When cipher is nil the
+// service runs in hash-only mode and reveal is unavailable.
 type Service struct {
 	repo   clienttoken.Repository
 	prefix string
@@ -65,13 +84,19 @@ type tokenCodec interface {
 	Prefix(raw string) string
 }
 
+// tokenCipher provides symmetric encryption of the raw token for the
+// owner-reveal flow. Implementations must treat ciphertext as a high-value
+// secret and must not leak plaintext via error messages.
 type tokenCipher interface {
 	Encrypt(plaintext string) (string, error)
 	Decrypt(encoded string) (string, error)
 }
 
-// NewService constructs a ClientTokenService.
-// prefix is the token prefix (e.g. "kish"), configured via ClientTokenConfig.
+// NewService wires Service with its persistence repository, the deployment
+// token prefix (e.g. "kish"), the cryptographic codec, and an optional
+// cipher. Passing zero cipher arguments runs Service in hash-only mode; in
+// that mode RevealToken returns ErrTokenContentUnavailable for every token.
+// Passing more than one cipher is undefined and only the first is used.
 func NewService(repo clienttoken.Repository, prefix string, codec tokenCodec, ciphers ...tokenCipher) *Service {
 	var cipher tokenCipher
 	if len(ciphers) > 0 {
@@ -80,8 +105,17 @@ func NewService(repo clienttoken.Repository, prefix string, codec tokenCodec, ci
 	return &Service{repo: repo, prefix: prefix, codec: codec, cipher: cipher}
 }
 
-// CreateToken generates and persists a new client token.
-// The raw token is returned exactly once in CreateResult.RawToken.
+// CreateToken generates a new raw client token, hashes it for lookup,
+// optionally encrypts it for owner reveal, and persists the token record.
+//
+// CreateResult.RawToken is the only place the raw token is ever returned;
+// callers must surface it to the owner exactly once and never log it. After
+// the response is sent the raw value can only be recovered through
+// RevealToken, and only when the deployment has a token encryption key.
+//
+// CreateInput.UserID is trusted as-is. The caller must have authenticated
+// the user via JWT (client tokens are not allowed to create more tokens;
+// that policy is enforced in the HTTP route layer).
 func (s *Service) CreateToken(ctx context.Context, in CreateInput) (*CreateResult, error) {
 	if in.Name == "" {
 		return nil, fmt.Errorf("name is required")
@@ -140,8 +174,15 @@ func (s *Service) rawTokenFor(t *clienttoken.ClientToken) *string {
 	return &raw
 }
 
-// RevealToken returns the raw token for an owned, valid token created after
-// encrypted token storage was enabled.
+// RevealToken returns the decrypted raw token to its owner.
+//
+// RevealToken returns:
+//   - clienttoken.ErrNotFound when no token has the given id.
+//   - ErrUnauthorized when the requesting user does not own the token.
+//   - ErrTokenContentUnavailable when the token is revoked, expired, was
+//     created in hash-only mode, the encryption key is unavailable, or the
+//     ciphertext is corrupt. The four cases are collapsed so the caller
+//     cannot distinguish "we don't have it" from "you can't have it".
 func (s *Service) RevealToken(ctx context.Context, tokenID, requestingUserID string) (*RevealResult, error) {
 	t, err := s.repo.FindByID(ctx, tokenID)
 	if err != nil {
@@ -200,6 +241,8 @@ func (s *Service) LookupByRawToken(ctx context.Context, rawToken string) (*clien
 		return nil, clienttoken.ErrNotFound
 	}
 	now := time.Now().UTC()
+	// Last-used tracking is best-effort observability; a valid client token
+	// must not fail authentication because usage metadata could not be updated.
 	if err := s.repo.TouchLastUsed(ctx, t.ID, now); err == nil {
 		t.LastUsedAt = &now
 		t.UpdatedAt = now

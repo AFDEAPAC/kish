@@ -39,7 +39,8 @@ func NewHealthHandler() *HealthHandler {
 	return &HealthHandler{}
 }
 
-// Check responds with {"status":"ok"}.
+// Check is a dependency-free liveness probe; it does not verify MongoDB,
+// storage, or downstream service health.
 func (h *HealthHandler) Check(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, dto.HealthResponse{Status: "ok"})
 }

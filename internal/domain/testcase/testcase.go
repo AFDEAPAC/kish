@@ -158,10 +158,8 @@ type TestCase struct {
 	// ID is the server-generated unique identifier (format: TC-YYYYMMDDHHMMSS-xxxx).
 	ID string `json:"id"`
 
-	// Name is an optional human-readable label for the test run.
 	Name string `json:"name,omitempty"`
 
-	// Description is an optional long-form description of the test run.
 	Description string `json:"description,omitempty"`
 
 	// TestType classifies the test (e.g. "sglang-benchmark", "generic").
@@ -209,10 +207,8 @@ type TestCase struct {
 	// ScriptArtifacts is present only on pre-artifact-API documents.
 	ScriptArtifacts []Artifact `json:"script_artifacts,omitempty"`
 
-	// CreatedAt is when the TestCase was first created.
 	CreatedAt time.Time `json:"created_at"`
 
-	// UpdatedAt is when the TestCase was last modified.
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
@@ -329,10 +325,8 @@ func (t *TestCase) refreshDefaultEnvironmentScope() {
 // New TestCases are always created as Draft+Private; status and visibility are
 // not configurable at creation time. Use the Publish workflow to transition.
 type MetadataInput struct {
-	// Name is an optional human-readable label for the test run.
 	Name string
 
-	// Description is an optional long-form description.
 	Description string
 
 	// TestType classifies the test. Defaults to "generic" when empty.

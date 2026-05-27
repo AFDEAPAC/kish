@@ -148,7 +148,6 @@ func newTestServerWithOwnerResolver(ownerResolver interface {
 		handler.NewUserHandler(nil),
 		handler.NewMeHandler(nil),
 		handler.NewClientTokenHandler(nil),
-		testAdminMiddleware,
 	)
 	return httptest.NewServer(infrahttp.WrapWithAuth(mux, testAdminMiddleware))
 }
@@ -420,7 +419,10 @@ func TestPatchTestCase_VisibilityOnDraft_409(t *testing.T) {
 	body, _ := json.Marshal(dto.UpdateTestCaseRequest{Visibility: &v})
 	req, _ := http.NewRequest(http.MethodPatch, srv.URL+"/api/v1/testcases/"+caseID, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusConflict {
 		t.Errorf("expected 409 changing visibility on draft, got %d", resp.StatusCode)

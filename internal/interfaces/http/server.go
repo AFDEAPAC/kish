@@ -9,12 +9,22 @@ import (
 	"time"
 )
 
-// Server wraps net/http.Server with graceful shutdown support.
+// Server wraps net/http.Server with graceful shutdown support and the
+// fixed request-handling timeouts the API enforces on every connection.
 type Server struct {
 	inner *http.Server
 }
 
-// NewServer constructs a Server bound to the given address with the provided handler.
+// NewServer builds the API HTTP server bound to host:port.
+//
+// Timeouts are not configurable on purpose: they encode policy rather than
+// preference. ReadTimeout caps how long a slowloris-style client can hold
+// open a request; WriteTimeout bounds artifact downloads (currently 60s,
+// the same horizon the S3 store uses for its outbound calls); IdleTimeout
+// keeps idle keep-alive connections from accumulating. Adjusting these
+// values affects upload size limits and storage backend timing
+// assumptions, so changes must be coordinated with the artifact service
+// and the storage backends.
 func NewServer(host string, port int, handler http.Handler) *Server {
 	return &Server{
 		inner: &http.Server{

@@ -20,14 +20,30 @@ import (
 	"github.com/AFDEAPAC/kish/internal/domain/testcase"
 )
 
-// Service coordinates artifact upload, retrieval, listing, and deletion.
+// Service orchestrates artifact upload, retrieval, listing, and deletion.
+//
+// The service uses three ports: the TestCase repository (for parent
+// existence, publish-immutability, and aggregate updates), the artifact
+// metadata repository, and the ObjectStore for content. Authorization is
+// performed by HTTP handlers before reaching the service; methods here trust
+// caller-supplied caseID/ownerUserID values and only enforce domain
+// invariants (artifact name validation, publish immutability, environment
+// scope rules).
+//
+// Multi-step writes (PutArtifact, DeleteArtifact, DeleteTestCase support
+// through unlinkDeletedArtifactFromTestCase) are NOT transactional. Object
+// store and metadata writes happen separately and a crash between the two
+// can leave orphaned content; cleanup is best-effort. Callers should treat
+// these workflows as eventually consistent.
 type Service struct {
 	tcRepo  testcase.Repository
 	artRepo domartifact.Repository
 	store   ObjectStore
 }
 
-// NewService constructs a Service with the provided dependencies.
+// NewService wires Service with its three ports. None may be nil in
+// production; tests pass nil for the ObjectStore when only metadata-level
+// behaviour is exercised.
 func NewService(tcRepo testcase.Repository, artRepo domartifact.Repository, store ObjectStore) *Service {
 	return &Service{tcRepo: tcRepo, artRepo: artRepo, store: store}
 }
@@ -39,7 +55,7 @@ func NewService(tcRepo testcase.Repository, artRepo domartifact.Repository, stor
 //  2. Verify the TestCase exists (returns testcase.ErrNotFound if not).
 //  3. Parse environment snapshots before writing so scope-specific publish
 //     immutability can be enforced.
-//  4. Stream r through a SHA-256 hasher while writing to the ObjectStore.
+//  4. Hash the exact bytes written to the ObjectStore.
 //  5. Upsert the artifact metadata in the repository.
 //  6. Link canonical artifact types back to the TestCase aggregate state.
 func (s *Service) PutArtifact(
@@ -63,7 +79,6 @@ func (s *Service) PutArtifact(
 		contentType = "application/octet-stream"
 	}
 
-	// Verify TestCase exists and is mutable for this artifact type.
 	tc, err := s.tcRepo.FindByID(ctx, caseID)
 	if err != nil {
 		return nil, err
@@ -88,8 +103,8 @@ func (s *Service) PutArtifact(
 
 	storageKey := domartifact.StorageKeyFor(caseID, artifactName)
 
-	// Compute SHA-256 inline while streaming to the ObjectStore to avoid
-	// loading the full content into memory.
+	// Non-environment artifacts stay streaming end-to-end; environment uploads
+	// are buffered above because scope validation must run before the write.
 	hasher := sha256.New()
 	counter := &countingReader{r: io.TeeReader(r, hasher)}
 
@@ -147,7 +162,13 @@ func (s *Service) GetArtifact(ctx context.Context, caseID, artifactName string) 
 	return meta, rc, nil
 }
 
-// ListArtifacts returns all artifact metadata records for the given TestCase.
+// ListArtifacts returns all artifact metadata records for the given
+// TestCase. Visibility and ownership filtering are done by the HTTP handler
+// against the parent TestCase before this method is called; ListArtifacts
+// itself returns every artifact known to the repository. The returned slice
+// may be empty when the case exists but has no artifacts, or when the case
+// does not exist at all — the application layer does not distinguish those
+// here and relies on the handler's prior FindTestCase check.
 func (s *Service) ListArtifacts(ctx context.Context, caseID string) ([]*domartifact.Artifact, error) {
 	return s.artRepo.List(ctx, caseID)
 }
@@ -341,7 +362,6 @@ func (s *Service) linkArtifactToTestCase(
 	return nil
 }
 
-// countingReader wraps an io.Reader and counts total bytes read.
 type countingReader struct {
 	r io.Reader
 	n int64

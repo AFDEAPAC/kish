@@ -2,8 +2,12 @@ package dto
 
 import "time"
 
-// ArtifactMetaResponse is the JSON representation of an artifact's metadata.
-// StorageKey is intentionally omitted; internal paths must not be exposed via API.
+// ArtifactMetaResponse is the public-safe projection of a domain Artifact.
+// StorageKey (the bucket / filesystem path) is intentionally excluded so
+// internal layout details cannot be inferred or used to bypass the
+// authorization checks the API performs before returning content. SHA256
+// is exposed under the JSON name "checksum_sha256" to make it discoverable
+// without binding API consumers to a specific algorithm name.
 type ArtifactMetaResponse struct {
 	CaseID       string    `json:"case_id"`
 	ArtifactName string    `json:"artifact_name"`
@@ -15,7 +19,12 @@ type ArtifactMetaResponse struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
-// ListArtifactsResponse is returned by GET /api/v1/testcases/{case_id}/artifacts.
+// ListArtifactsResponse is the outbound payload of
+// GET /api/v1/testcases/{case_id}/artifacts. Visibility filtering has
+// already been performed by the handler against the parent TestCase; an
+// authorised caller sees every artifact attached to the case in the order
+// returned by the repository (currently insertion order, not stable across
+// repository implementations).
 type ListArtifactsResponse struct {
 	CaseID    string                 `json:"case_id"`
 	Artifacts []ArtifactMetaResponse `json:"artifacts"`

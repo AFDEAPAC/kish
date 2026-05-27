@@ -28,17 +28,17 @@ type Reporter interface {
 // StdoutReporter prints [detect]-prefixed progress messages to stdout.
 type StdoutReporter struct{}
 
-// CollectorStarted prints a "running collector" line.
+// CollectorStarted preserves the CLI's human-readable [detect] progress format.
 func (r *StdoutReporter) CollectorStarted(name string) {
 	fmt.Printf("[detect] running collector: %s\n", name)
 }
 
-// CollectorFinished prints the collector name and its status.
+// CollectorFinished mirrors collector completion without surfacing reporter errors.
 func (r *StdoutReporter) CollectorFinished(name string, status environment.CollectorStatus) {
 	fmt.Printf("[detect] %s: %s\n", name, status)
 }
 
-// SnapshotWritten prints the output file path.
+// SnapshotWritten reports the resolved path after the CLI has completed the write.
 func (r *StdoutReporter) SnapshotWritten(path string) {
 	fmt.Printf("[detect] written snapshot: %s\n", path)
 }
@@ -47,6 +47,6 @@ func (r *StdoutReporter) SnapshotWritten(path string) {
 // Used when the --quiet flag is set.
 type NoopReporter struct{}
 
-func (r *NoopReporter) CollectorStarted(_ string)                               {}
+func (r *NoopReporter) CollectorStarted(_ string)                                 {}
 func (r *NoopReporter) CollectorFinished(_ string, _ environment.CollectorStatus) {}
-func (r *NoopReporter) SnapshotWritten(_ string)                                {}
+func (r *NoopReporter) SnapshotWritten(_ string)                                  {}

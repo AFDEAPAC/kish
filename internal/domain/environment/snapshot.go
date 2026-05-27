@@ -2,7 +2,11 @@ package environment
 
 import "time"
 
-// SchemaVersionV1 is the schema_version string for the v1 environment snapshot format.
+// SchemaVersionV1 is the only schema_version string the parser accepts for
+// the current snapshot format. Bumping this constant is a backward-
+// incompatible schema change: legacy snapshots already uploaded to the API
+// would fail validation and any new artifact pipeline must handle both
+// values during the migration window.
 const SchemaVersionV1 = "environment-snapshot/v1"
 
 // EnvironmentSnapshot is an immutable JSON snapshot describing the environment
@@ -23,11 +27,14 @@ type EnvironmentSnapshot struct {
 	// Type describes the nature of the environment.
 	Type EnvironmentType `json:"type"`
 
-	// CollectedAt is when the snapshot was produced.
+	// CollectedAt is when detect finished assembling this snapshot. It is
+	// authoritative for ordering supporting snapshots within a TestCase;
+	// the upload time recorded on the artifact metadata may differ when
+	// snapshots are produced offline and uploaded later.
 	CollectedAt time.Time `json:"collected_at"`
 
-	// Data holds normalized, query-friendly key-value environment facts.
-	// All values are strings; boolean-like values use "true"/"false"/"unknown".
+	// Data stores environment facts in the snapshot's string-only contract.
+	// Boolean-like values use "true"/"false"/"unknown".
 	Data map[string]string `json:"data"`
 
 	// PackageSets holds package lists from all collectors.

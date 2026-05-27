@@ -52,9 +52,8 @@ func (r *DefaultRunner) LookPath(file string) (string, error) {
 	return exec.LookPath(file)
 }
 
-// Run executes the command and captures stdout and stderr.
-// A timeout of DefaultCommandTimeout is applied in addition to any deadline
-// already present on ctx.
+// Run applies DefaultCommandTimeout on top of ctx so real collector commands
+// cannot hang detection indefinitely.
 func (r *DefaultRunner) Run(ctx context.Context, name string, args ...string) (CommandResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, DefaultCommandTimeout)
 	defer cancel()

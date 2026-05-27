@@ -1,4 +1,32 @@
-// Package s3 implements ObjectStore backed by AWS S3 or an S3-compatible service.
+// Package s3 implements ObjectStore backed by AWS S3 or an S3-compatible
+// service such as MinIO.
+//
+// Operational assumptions baked into this implementation:
+//
+//   - Credentials come from the AWS SDK default chain unless static
+//     AccessKeyID/SecretAccessKey are provided in Options. Operators that
+//     deploy in EKS/EC2 should leave the static fields empty and rely on
+//     IRSA / instance profiles.
+//   - TLS verification follows the configured TLSOptions. Self-signed
+//     buckets (MinIO behind an internal CA) require storage.s3.tls.ca_file
+//     to be set; the package detects unknown-authority errors and rewrites
+//     them with that hint.
+//   - Outbound HTTP timeout is 60s (see tls.go). There is no automatic
+//     retry loop; transient failures surface to the application layer.
+//   - PutObject must know the content length up front, so non-seekable
+//     readers are buffered fully in memory before being sent. Callers that
+//     stream large artifacts should pre-wrap the body in an io.Seeker.
+//   - GetObject returns the S3 LastModified timestamp when present and
+//     falls back to time.Now() so newly written objects whose metadata has
+//     not yet propagated still produce a non-zero ObjectInfo.UpdatedAt.
+//   - DeleteObject treats missing keys as success because S3 itself does;
+//     no extra HEAD round-trip is performed.
+//   - IAM permissions required: s3:GetObject, s3:PutObject, s3:DeleteObject
+//     against the configured bucket and optional prefix. Listing is not
+//     used.
+//
+// All Store methods are safe for concurrent use because the underlying
+// aws-sdk-go-v2 client is.
 package s3
 
 import (
@@ -96,7 +124,21 @@ func NewWithClient(client Client, opts Options) (*Store, error) {
 	return &Store{client: client, bucket: opts.Bucket, prefix: prefix}, nil
 }
 
-// PutObject writes r to S3 under key, replacing any existing object.
+// PutObject uploads r to S3 under key as a single-shot PUT, overwriting any
+// existing object. The implementation does not use multipart upload.
+//
+// Non-seekable readers are fully buffered in memory before the request is
+// dispatched because S3 requires a known ContentLength on PutObject and
+// the SDK cannot rewind a streaming reader on retry. Callers uploading
+// large artifacts should pass an io.Seeker (e.g. *os.File or *bytes.Reader)
+// to keep memory bounded.
+//
+// On error PutObject maps three categories before returning:
+//   - storage backend reports out-of-space → wraps storage.ErrInsufficientStorage.
+//   - TLS unknown-authority → rewritten with a hint to configure
+//     storage.s3.tls.ca_file (production deployments behind self-signed
+//     buckets always hit this once before being configured).
+//   - everything else is returned verbatim with a contextualised wrap.
 func (s *Store) PutObject(ctx context.Context, key string, r io.Reader, size int64, contentType string) error {
 	objectKey, err := s.objectKey(key)
 	if err != nil {
@@ -142,7 +184,16 @@ func seekableBody(r io.Reader, size int64) (io.Reader, int64, error) {
 	return bytes.NewReader(data), int64(len(data)), nil
 }
 
-// GetObject retrieves an object stream and metadata from S3.
+// GetObject opens an S3 GetObject stream and returns its metadata. The
+// returned io.ReadCloser must be closed by the caller even on early
+// returns from the HTTP handler.
+//
+// Returns storage.ErrObjectNotFound when S3 reports NoSuchKey / 404. TLS
+// unknown-authority errors are rewritten with the same hint as PutObject.
+// The reported ObjectInfo.UpdatedAt prefers S3's LastModified header; if
+// the response omits it (some S3-compatible backends do for very fresh
+// objects) UpdatedAt falls back to time.Now() so callers always observe a
+// non-zero timestamp.
 func (s *Store) GetObject(ctx context.Context, key string) (io.ReadCloser, storage.ObjectInfo, error) {
 	objectKey, err := s.objectKey(key)
 	if err != nil {

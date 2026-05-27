@@ -102,18 +102,10 @@ Examples:
 	return cmd
 }
 
-// resolveToken returns the API token to use, following the priority order:
-// 1. --token flag
-// 2. KISH_API_TOKEN environment variable
-// Returns empty string if neither is set.
 func resolveToken(flags uploadFlags) string {
 	return resolveTokenValue(flags.token)
 }
 
-// resolveAPIBase returns the API base URL to use, following the priority order:
-// 1. --api flag
-// 2. KISH_API_URL environment variable
-// Returns empty string if neither is set.
 func resolveAPIBase(flags uploadFlags) string {
 	return resolveAPIBaseValue(flags.apiBase)
 }
@@ -153,7 +145,8 @@ func runUpload(flags uploadFlags) error {
 func buildUploadArtifacts(flags uploadFlags) ([]uploadArtifact, error) {
 	var artifacts []uploadArtifact
 
-	// Environment snapshot: required, must be valid JSON.
+	// The CLI only checks JSON syntax here; the API validates snapshot schema,
+	// scope, and publish-time mutability before linking the artifact.
 	envContent, err := readTextFile(flags.envFile, maxUploadEnvironmentBytes)
 	if err != nil {
 		return nil, fmt.Errorf("--env: %w", err)
@@ -290,7 +283,6 @@ func ensureCaseID(flags uploadFlags, token string) (caseID string, created bool,
 
 	switch resp.StatusCode {
 	case http.StatusCreated:
-		// success, fall through
 	case http.StatusUnauthorized:
 		return "", false, fmt.Errorf("authentication required: provide --token or set KISH_API_TOKEN")
 	case http.StatusForbidden:
@@ -370,8 +362,8 @@ func uploadArtifactContent(caseID string, a uploadArtifact, apiBase, token strin
 	}
 }
 
-// readTextFile reads a file and returns its content as a string.
-// Returns an error if the file does not exist, is not readable, or exceeds maxBytes.
+// readTextFile applies the caller's artifact-size limit before reading the
+// whole file, so oversized uploads fail locally before any network call.
 func readTextFile(path string, maxBytes int64) (string, error) {
 	info, err := os.Stat(path)
 	if err != nil {

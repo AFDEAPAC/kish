@@ -24,7 +24,9 @@ type ContainerCollector struct {
 	cgroupPath    string
 }
 
-// NewContainerCollector constructs a ContainerCollector.
+// NewContainerCollector constructs a ContainerCollector wired to the
+// default /.dockerenv and /proc/1/cgroup paths. Use SetDockerEnvPath /
+// SetCgroupPath in tests to point at fixtures.
 func NewContainerCollector(runner command.Runner) *ContainerCollector {
 	return &ContainerCollector{
 		runner:        runner,
@@ -33,7 +35,6 @@ func NewContainerCollector(runner command.Runner) *ContainerCollector {
 	}
 }
 
-// Name returns the collector identifier.
 func (c *ContainerCollector) Name() string { return "container" }
 
 // SetDockerEnvPath overrides the path checked for container detection.

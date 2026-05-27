@@ -15,17 +15,14 @@ import (
 // New TestCases are always created as Draft + Private; status and visibility
 // cannot be supplied here.
 type CreateTestCaseV1Request struct {
-	// Name is an optional human-readable label for the test run.
 	Name string `json:"name"`
 
-	// Description is an optional long-form description.
 	Description string `json:"description"`
 
 	// TestType classifies the test (e.g. "sglang-benchmark", "generic").
 	// Defaults to "generic" when empty.
 	TestType string `json:"test_type"`
 
-	// Tags are optional user-defined labels.
 	Tags []string `json:"tags"`
 }
 
@@ -101,7 +98,8 @@ type TestResultArtifactRefResponse struct {
 	UploadedAt   time.Time `json:"uploaded_at,omitempty"`
 }
 
-// TestScriptArtifactRefResponse points to a script artifact associated with a TestCase.
+// TestScriptArtifactRefResponse carries script artifact metadata; content stays
+// behind the artifact download endpoint.
 type TestScriptArtifactRefResponse struct {
 	ArtifactName string    `json:"artifact_name"`
 	ContentType  string    `json:"content_type,omitempty"`

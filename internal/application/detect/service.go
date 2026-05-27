@@ -67,7 +67,6 @@ func (s *DetectionService) DetectWithScope(ctx context.Context, reporter Reporte
 		// Merge package sets; collectors set RawFile to reference external raw output files.
 		mergedPackageSets = append(mergedPackageSets, result.PackageSets...)
 
-		// Merge structured device data.
 		if result.Devices != nil {
 			if mergedDevices == nil {
 				mergedDevices = &environment.Devices{}

@@ -137,8 +137,27 @@ func newObjectStore(ctx context.Context, cfg config.StorageConfig) (storage.Obje
 	}
 }
 
-// runAPI loads config, connects to MongoDB, initialises all services, runs the
-// bootstrap flow, and starts the HTTP server.
+// runAPI is the lifecycle owner of the `kish api` subcommand.
+//
+// Startup order (fail-fast on each step):
+//  1. Load and validate config (file + flag overrides).
+//  2. Build the ObjectStore (local filesystem or S3).
+//  3. Connect MongoDB and Ping it; install a deferred Disconnect with a
+//     5-second deadline so process exit cannot stall on a hung server.
+//  4. Construct every repository (each creates its required indexes).
+//  5. Wire security primitives (bcrypt hasher, JWT service, opaque token
+//     codec, optional AES-GCM token cipher with a JWT-secret fallback for
+//     legacy configs).
+//  6. Wire application services and run the bootstrap admin flow once.
+//  7. Register routes and wrap them with auth + CORS middleware.
+//
+// Shutdown:
+//   - SIGINT/SIGTERM trigger graceful HTTP shutdown with a 10-second
+//     deadline (in-flight requests up to that point complete).
+//   - The deferred MongoDB Disconnect runs immediately after the HTTP
+//     server returns, with its own 5-second deadline.
+//   - Any error from srv.Start (other than http.ErrServerClosed) is
+//     returned so the supervisor sees a non-zero exit.
 func runAPI(ctx context.Context, flags apiFlags) error {
 	cfg, err := config.Load(flags.configPath, config.Overrides{
 		Host:          flags.host,
@@ -153,13 +172,11 @@ func runAPI(ctx context.Context, flags apiFlags) error {
 		return fmt.Errorf("invalid config: %w", err)
 	}
 
-	// Initialise object store.
 	objStore, err := newObjectStore(ctx, cfg.Storage)
 	if err != nil {
 		return err
 	}
 
-	// Connect MongoDB.
 	log.Printf("[api] connecting to MongoDB at %s (db: %s)", cfg.MongoDB.URI, cfg.MongoDB.Database)
 	mongoClient, err := mongodb.Connect(ctx, cfg.MongoDB.URI, cfg.MongoDB.Database)
 	if err != nil {
@@ -173,7 +190,6 @@ func runAPI(ctx context.Context, flags apiFlags) error {
 		}
 	}()
 
-	// Initialise repositories.
 	tcRepo, err := mongodb.NewTestCaseRepository(ctx, mongoClient.DB())
 	if err != nil {
 		return fmt.Errorf("testcase repository init: %w", err)
@@ -195,12 +211,14 @@ func runAPI(ctx context.Context, flags apiFlags) error {
 		return fmt.Errorf("client token repository init: %w", err)
 	}
 
-	// Initialise security infrastructure.
 	hasher := security.NewBcryptHasher()
 	jwtSvc := security.NewJWTService(cfg.Auth.JWTSecret, cfg.Auth.AccessTokenTTL)
 	tokenCodec := security.NewOpaqueTokenService()
 	tokenEncryptionKey := cfg.Auth.ClientTokenEncryptionKey
 	if tokenEncryptionKey == "" {
+		// This fallback preserves development and legacy configs. Production
+		// deployments should set auth.client_token_encryption_key explicitly so
+		// client-token reveal data is not coupled to the JWT signing secret.
 		tokenEncryptionKey = cfg.Auth.JWTSecret
 	}
 	tokenCipher, err := security.NewTokenCipher(tokenEncryptionKey)
@@ -208,7 +226,6 @@ func runAPI(ctx context.Context, flags apiFlags) error {
 		return fmt.Errorf("client token encryption: %w", err)
 	}
 
-	// Initialise application services.
 	tcSvc := apptestcase.NewService(tcRepo, apptestcase.DeleteCleanup{ArtifactRepo: artRepo, Store: objStore})
 	artSvc := appArtifact.NewService(tcRepo, artRepo, objStore)
 	userSvc := appUser.NewService(userRepo, hasher, cfg.Auth.PasswordMinLength)
@@ -221,13 +238,10 @@ func runAPI(ctx context.Context, flags apiFlags) error {
 		AdminDisplayName: cfg.Bootstrap.AdminDisplayName,
 	}, cfg.Auth.PasswordMinLength, log.Default())
 
-	// Bootstrap: create initial admin if none exists.
 	bootstrapSvc.Run(ctx)
 
-	// Initialise auth middleware.
 	authMW := middleware.Auth(jwtSvc, ctSvc, cfg.ClientToken.Prefix)
 
-	// Register routes.
 	mux := http.NewServeMux()
 	infrahttp.RegisterRoutes(
 		mux,
@@ -238,7 +252,6 @@ func runAPI(ctx context.Context, flags apiFlags) error {
 		handler.NewUserHandler(userSvc),
 		handler.NewMeHandler(userSvc),
 		handler.NewClientTokenHandler(ctSvc),
-		authMW,
 	)
 
 	// Wrap the entire mux with the auth middleware so the principal is available

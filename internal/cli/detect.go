@@ -107,7 +107,6 @@ func runDetect(ctx context.Context, flags detectFlags) error {
 		return fmt.Errorf("detection failed: %w", err)
 	}
 
-	// Resolve output path: use the provided flag or generate a default filename.
 	outputPath := flags.output
 	if outputPath == "" {
 		outputPath = defaultOutputPath(snapshotHostname(snapshot), snapshot.CollectedAt)
@@ -123,6 +122,9 @@ func runDetect(ctx context.Context, flags detectFlags) error {
 		return fmt.Errorf("failed to serialize snapshot: %w", err)
 	}
 
+	// Detect+upload can run without leaving a local snapshot file when the
+	// caller only provides --case-id. Supplying --output opts back into writing
+	// the same bytes that will be uploaded.
 	shouldWriteOutput := flags.output != "" || flags.caseID == ""
 	if shouldWriteOutput {
 		if err := os.WriteFile(outputPath, jsonBytes, 0644); err != nil {

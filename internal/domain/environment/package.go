@@ -28,10 +28,8 @@ type PackageSet struct {
 // Name is required when parsed. All other fields are optional and depend
 // on the package manager.
 type Package struct {
-	// Name is the package name.
 	Name string `json:"name"`
 
-	// Version is the package version string.
 	Version string `json:"version,omitempty"`
 
 	// Architecture is the target architecture (used mainly by dpkg/rpm).

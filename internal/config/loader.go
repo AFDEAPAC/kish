@@ -17,11 +17,13 @@ type Overrides struct {
 	MongoDatabase string
 }
 
-// Load reads the YAML config file at path, applies overrides, and validates
-// required fields for the api command.
+// Load reads the YAML config file at path and applies overrides without
+// command-specific validation.
 //
 // If path is empty, Viper still applies defaults and overrides; no file is read.
-// The returned Config always has DefaultConfig values as the baseline.
+// The returned Config always has DefaultConfig values as the baseline. API
+// startup must call ValidateForAPI after Load so non-API callers can reuse the
+// same loader with different requirements.
 func Load(path string, overrides Overrides) (Config, error) {
 	cfg := DefaultConfig()
 

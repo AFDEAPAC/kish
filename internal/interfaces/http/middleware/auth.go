@@ -92,7 +92,6 @@ func resolveP(r *http.Request, jwtSvc *security.JWTService, ctSvc *appClientToke
 		return Principal{IsAnonymous: true, AuthMethod: AuthMethodAnonymous}
 	}
 
-	// Identify client tokens by their prefix.
 	if strings.HasPrefix(raw, prefix+"_") {
 		t, err := ctSvc.LookupByRawToken(r.Context(), raw)
 		if err == nil {
@@ -106,7 +105,6 @@ func resolveP(r *http.Request, jwtSvc *security.JWTService, ctSvc *appClientToke
 		// Invalid client token — fall through to JWT attempt.
 	}
 
-	// Attempt JWT verification.
 	claims, err := jwtSvc.Verify(raw)
 	if err == nil {
 		return Principal{

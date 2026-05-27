@@ -24,7 +24,9 @@ type ROCmCollector struct {
 	versionFilePath string
 }
 
-// NewROCmCollector constructs a ROCmCollector.
+// NewROCmCollector constructs a ROCmCollector wired to the default
+// /opt/rocm/.info/version file. Use SetVersionFilePath in tests to point at
+// a fixture.
 func NewROCmCollector(runner command.Runner) *ROCmCollector {
 	return &ROCmCollector{runner: runner, versionFilePath: rocmVersionFilePath}
 }
@@ -35,7 +37,6 @@ func (c *ROCmCollector) SetVersionFilePath(path string) {
 	c.versionFilePath = path
 }
 
-// Name returns the collector identifier.
 func (c *ROCmCollector) Name() string { return "rocm" }
 
 // Collect checks for ROCm installation and runtime tool availability.
@@ -45,7 +46,6 @@ func (c *ROCmCollector) Collect(ctx context.Context) environment.CollectorResult
 	var warnings []string
 	anyPartial := false
 
-	// Read ROCm version from the canonical version file.
 	versionContent, err := os.ReadFile(c.versionFilePath)
 	if err == nil {
 		data["rocm.version"] = strings.TrimSpace(string(versionContent))
@@ -56,7 +56,6 @@ func (c *ROCmCollector) Collect(ctx context.Context) environment.CollectorResult
 		data["rocm.info_version_file.exists"] = "false"
 	}
 
-	// Check rocm-smi availability and runnability.
 	if _, err := c.runner.LookPath("rocm-smi"); err == nil {
 		data["rocm_smi.available"] = "true"
 		result, runErr := c.runner.Run(ctx, "rocm-smi")
@@ -73,7 +72,6 @@ func (c *ROCmCollector) Collect(ctx context.Context) environment.CollectorResult
 		data["rocm_smi.available"] = "false"
 	}
 
-	// Check rocminfo availability and runnability.
 	if _, err := c.runner.LookPath("rocminfo"); err == nil {
 		data["rocminfo.available"] = "true"
 		result, runErr := c.runner.Run(ctx, "rocminfo")

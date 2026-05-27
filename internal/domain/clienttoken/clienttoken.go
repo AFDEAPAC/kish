@@ -4,8 +4,13 @@
 // kish upload and machine-to-machine integrations. They are not suitable for
 // interactive web dashboard sessions, which use JWT.
 //
-// Token storage rule: the SHA-256 hash is persisted for lookup, and newer
-// tokens may also persist an encrypted raw token for owner reveal.
+// Token storage rule: the SHA-256 hash (TokenHash) is the lookup key and is
+// always persisted; the raw token value is never stored. When the deployment
+// configures a token encryption key, the application layer additionally
+// persists the raw token under EncryptedToken so the owner can reveal it
+// later. Without that key tokens are hash-only and not recoverable.
+// EncryptedToken is a secret in plaintext form once decrypted and must never
+// be logged or returned by list/lookup endpoints.
 package clienttoken
 
 import (
@@ -35,14 +40,23 @@ func ValidScope(s Scope) bool {
 
 // ClientToken represents a stored client token credential.
 //
-// The raw token is never stored. Only TokenHash (SHA-256) and TokenPrefix
-// (first 8 characters of the raw token, for display) are persisted.
+// TokenHash is the SHA-256 of the raw token and is the only lookup key.
+// TokenPrefix holds the first 8 characters of the raw token for UI display
+// (it is not secret but must not be used for authentication). EncryptedToken
+// is empty when the deployment runs without a token encryption key; when set
+// it must be treated as a high-value secret and decrypted only for the owner
+// during reveal. Both TokenHash and EncryptedToken are excluded from JSON
+// responses; serializers in interfaces/http/dto enforce that boundary.
 type ClientToken struct {
-	ID             string     `json:"id"`
-	UserID         string     `json:"user_id"`
-	Name           string     `json:"name"`
-	TokenPrefix    string     `json:"token_prefix"`
-	TokenHash      string     `json:"-"`
+	ID          string `json:"id"`
+	UserID      string `json:"user_id"`
+	Name        string `json:"name"`
+	TokenPrefix string `json:"token_prefix"`
+	// TokenHash is the SHA-256 of the raw token. Never log or return in API.
+	TokenHash string `json:"-"`
+	// EncryptedToken stores the raw token under the configured token
+	// encryption key for owner-reveal flows. Empty when encryption is
+	// disabled. Must be decrypted only by the owning user.
 	EncryptedToken string     `json:"-"`
 	Scopes         []Scope    `json:"scopes"`
 	ExpiresAt      *time.Time `json:"expires_at,omitempty"`

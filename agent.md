@@ -10,6 +10,7 @@ read these documents before proceeding:
 
 1. `docs/development/architecture-spec.md` — understand this project's design principles and architecture constraints.
 2. `docs/development/coding-style.md` — follow this project's Go coding, comment, error-handling, and testing rules.
+3. `docs/development/comment-spec.md` — write comments only when they preserve important context that code alone cannot reliably express. Prefer comments for invariants, security constraints, external-system quirks, workarounds, lifecycle assumptions, performance-sensitive decisions, and non-obvious design choices. Avoid comments that merely restate the code.
 
 ## Commit Messages
 

@@ -36,17 +36,10 @@ type Repository interface {
 // Allowed: a-z, A-Z, 0-9, dot, underscore, hyphen.
 var artifactNamePattern = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 
-// ValidateArtifactName checks that name is safe to use as an artifact identifier.
-//
-// Rules:
-//   - non-empty
-//   - length 1–255 characters
-//   - must not be "." or ".."
-//   - must not contain "/" or "\" or null byte
-//   - must match [a-zA-Z0-9._-]
-//
-// This validation is intentionally strict to prevent path traversal and to keep
-// artifact names portable across operating systems and storage backends.
+// ValidateArtifactName keeps artifact identifiers safe for every supported
+// storage backend. The allowlist is intentionally stricter than MongoDB or S3
+// require so a client-supplied name can never become a path traversal segment
+// or a backend-specific control character.
 func ValidateArtifactName(name string) error {
 	if name == "" {
 		return errors.New("artifact_name must not be empty")

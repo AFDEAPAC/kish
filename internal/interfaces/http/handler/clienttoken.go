@@ -11,17 +11,37 @@ import (
 	"github.com/AFDEAPAC/kish/internal/interfaces/http/middleware"
 )
 
-// ClientTokenHandler handles client token management endpoints.
+// ClientTokenHandler adapts the client-token application service into the
+// /api/me/client-tokens endpoints.
+//
+// Every route under /api/me/client-tokens is registered with RequireJWT in
+// routes.go: client tokens are not allowed to create more client tokens,
+// list other tokens, reveal them, or revoke them. The handler trusts the
+// Principal.UserID populated by the auth middleware to scope all operations
+// to the calling user.
+//
+// HTTP error mapping:
+//   - appClientToken.ErrUnauthorized          -> 403
+//   - clienttoken.ErrNotFound                  -> 404
+//   - appClientToken.ErrTokenContentUnavailable -> 409
+//   - validation failures from CreateToken     -> 400
+//   - anything else                            -> 500
 type ClientTokenHandler struct {
 	svc *appClientToken.Service
 }
 
-// NewClientTokenHandler constructs a ClientTokenHandler.
+// NewClientTokenHandler wires the handler. svc may be nil in tests that do
+// not exercise client-token routes; nil dereferences will surface as 500.
 func NewClientTokenHandler(svc *appClientToken.Service) *ClientTokenHandler {
 	return &ClientTokenHandler{svc: svc}
 }
 
-// Create handles POST /api/me/client-tokens.
+// Create issues a new client token for the calling user.
+//
+// The raw token is returned exactly once inside CreateClientTokenResponse;
+// once the response is sent the value cannot be recovered unless the
+// deployment runs with a token encryption key (see RevealToken). 201 on
+// success, 400 on validation failures from CreateToken, 500 otherwise.
 func (h *ClientTokenHandler) Create(w http.ResponseWriter, r *http.Request) {
 	p := middleware.PrincipalFromContext(r.Context())
 
@@ -55,7 +75,13 @@ func (h *ClientTokenHandler) Create(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Reveal handles GET /api/me/client-tokens/{token_id}.
+// Reveal returns the decrypted raw token to its owner.
+//
+// 200 with the raw token when reveal succeeds; 400 when token_id is missing;
+// 403 when the calling user is not the owner; 404 when the token does not
+// exist; 409 when the token cannot be revealed (revoked, expired, hash-only
+// deployment, or ciphertext corrupt). The four 409 sub-cases are
+// deliberately indistinguishable to avoid leaking storage state.
 func (h *ClientTokenHandler) Reveal(w http.ResponseWriter, r *http.Request) {
 	p := middleware.PrincipalFromContext(r.Context())
 	tokenID := r.PathValue("token_id")
@@ -82,7 +108,9 @@ func (h *ClientTokenHandler) Reveal(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, dto.RevealClientTokenFromDomain(result.Token, result.RawToken))
 }
 
-// List handles GET /api/me/client-tokens.
+// List returns every token owned by the calling user. The response contains
+// metadata only; raw tokens are never embedded even when the deployment
+// supports reveal. 500 if the repository is unavailable.
 func (h *ClientTokenHandler) List(w http.ResponseWriter, r *http.Request) {
 	p := middleware.PrincipalFromContext(r.Context())
 
@@ -99,7 +127,10 @@ func (h *ClientTokenHandler) List(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// Revoke handles DELETE /api/me/client-tokens/{token_id}.
+// Revoke marks the token as revoked. 200 on success, 400 when token_id is
+// missing, 403 when the calling user is not the owner, 404 when the token
+// does not exist, 500 otherwise. Revocation is durable; a previously valid
+// token will fail every subsequent LookupByRawToken.
 func (h *ClientTokenHandler) Revoke(w http.ResponseWriter, r *http.Request) {
 	p := middleware.PrincipalFromContext(r.Context())
 	tokenID := r.PathValue("token_id")

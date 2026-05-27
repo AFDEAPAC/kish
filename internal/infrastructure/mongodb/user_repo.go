@@ -54,12 +54,26 @@ func userFromDocument(doc userDocument) *user.User {
 	}
 }
 
-// UserRepository implements domain/user.Repository using MongoDB.
+// UserRepository implements domain/user.Repository against the "users"
+// collection.
+//
+// Index assumptions established by ensureUserIndexes:
+//   - unique index on email; duplicate inserts are translated to
+//     user.ErrEmailConflict.
+//   - secondary indexes on role, status, and created_at to keep admin list
+//     and last-admin CountByRole queries cheap.
+//
+// Every method is a single-document operation; the package-level note about
+// no multi-document transactions applies. PasswordHash is stored verbatim in
+// the document; the application layer is expected to blank it on the
+// returned User before forwarding to non-auth callers.
 type UserRepository struct {
 	col *mongo.Collection
 }
 
-// NewUserRepository constructs a UserRepository and ensures the required indexes exist.
+// NewUserRepository binds UserRepository to the configured database and
+// ensures the indexes documented on UserRepository exist. The supplied ctx
+// bounds the index-creation phase only and may safely be a startup context.
 func NewUserRepository(ctx context.Context, db *mongo.Database) (*UserRepository, error) {
 	col := db.Collection(collectionUsers)
 	if err := ensureUserIndexes(ctx, col); err != nil {
@@ -133,6 +147,7 @@ func (r *UserRepository) FindByEmail(ctx context.Context, email string) (*user.U
 }
 
 // Update applies the non-zero fields of input to the user identified by id.
+// Returns user.ErrNotFound when no document matches.
 func (r *UserRepository) Update(ctx context.Context, id string, input user.UpdateInput) (*user.User, error) {
 	set := bson.D{{Key: "updated_at", Value: time.Now().UTC()}}
 	if input.DisplayName != "" {

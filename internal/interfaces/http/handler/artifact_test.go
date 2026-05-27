@@ -189,7 +189,6 @@ func newArtTestServerWithDeps(tcRepo *artHandlerFakeTCRepo, artRepo *artHandlerF
 		handler.NewUserHandler(nil),
 		handler.NewMeHandler(nil),
 		handler.NewClientTokenHandler(nil),
-		adminPrincipalMiddleware,
 	)
 	return httptest.NewServer(infrahttp.WrapWithAuth(mux, adminPrincipalMiddleware))
 }
@@ -601,7 +600,6 @@ func newArtTestServerWithRepo(tcRepo *artHandlerFakeTCRepo) *httptest.Server {
 		handler.NewUserHandler(nil),
 		handler.NewMeHandler(nil),
 		handler.NewClientTokenHandler(nil),
-		adminPrincipalMiddleware,
 	)
 	return httptest.NewServer(infrahttp.WrapWithAuth(mux, adminPrincipalMiddleware))
 }
@@ -712,7 +710,6 @@ func newArtTestServerAnonymous(tcRepo *artHandlerFakeTCRepo) *httptest.Server {
 		handler.NewUserHandler(nil),
 		handler.NewMeHandler(nil),
 		handler.NewClientTokenHandler(nil),
-		anonymousMiddleware,
 	)
 	return httptest.NewServer(infrahttp.WrapWithAuth(mux, anonymousMiddleware))
 }

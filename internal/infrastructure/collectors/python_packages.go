@@ -31,7 +31,6 @@ func NewPythonPackageCollector(runner command.Runner, outputDir string) *PythonP
 	return &PythonPackageCollector{runner: runner, outputDir: outputDir}
 }
 
-// Name returns the collector identifier.
 func (c *PythonPackageCollector) Name() string { return "python_packages" }
 
 // Collect finds the Python executable, collects version/prefix info, and
@@ -39,7 +38,6 @@ func (c *PythonPackageCollector) Name() string { return "python_packages" }
 func (c *PythonPackageCollector) Collect(ctx context.Context) environment.CollectorResult {
 	startedAt := time.Now()
 
-	// Determine which Python binary to use.
 	pythonBin := c.resolvePythonBin()
 	if pythonBin == "" {
 		return environment.CollectorResult{
@@ -56,7 +54,6 @@ func (c *PythonPackageCollector) Collect(ctx context.Context) environment.Collec
 	var warnings []string
 	anyPartial := false
 
-	// Collect version string.
 	versionResult, err := c.runner.Run(ctx, pythonBin, "--version")
 	if err == nil {
 		// python --version prints to stdout or stderr depending on version.
@@ -71,7 +68,6 @@ func (c *PythonPackageCollector) Collect(ctx context.Context) environment.Collec
 		anyPartial = true
 	}
 
-	// Collect sys.executable and sys.prefix.
 	infoResult, err := c.runner.Run(ctx, pythonBin, "-c", "import sys; print(sys.executable); print(sys.prefix)")
 	if err == nil {
 		lines := strings.Split(strings.TrimSpace(infoResult.Stdout), "\n")
@@ -83,12 +79,10 @@ func (c *PythonPackageCollector) Collect(ctx context.Context) environment.Collec
 		}
 	}
 
-	// Capture virtualenv if present.
 	if venv := os.Getenv("VIRTUAL_ENV"); venv != "" {
 		data["python.virtualenv"] = venv
 	}
 
-	// Collect full pip package list.
 	pipResult, err := c.runner.Run(ctx, pythonBin, "-m", "pip", "list", "--format=json")
 	if err != nil {
 		warnings = append(warnings, "pip list failed: "+err.Error())

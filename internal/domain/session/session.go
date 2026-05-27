@@ -10,7 +10,22 @@ package session
 
 import "time"
 
-// Session represents a stored refresh-token record.
+// Session is a single refresh-token record bound to one user.
+//
+// State transitions:
+//   - Created on successful Login (auth.Service.Login) with ExpiresAt set to
+//     now+refreshTTL and RevokedAt nil.
+//   - Marked invalid by setting RevokedAt; the record is kept rather than
+//     deleted so historical audit and the package-level rotation rule
+//     ("old session revoked before new session is observable") remain
+//     enforceable.
+//   - Treated as invalid once ExpiresAt has passed even without an
+//     explicit revocation; cleanup of expired-but-not-revoked rows is left
+//     to operators.
+//
+// TokenHash is the SHA-256 of the raw refresh token and is the only secret
+// in the record; it must never be logged or returned in API responses
+// (the json:"-" tag is enforcement, not documentation).
 type Session struct {
 	ID         string     `json:"id"`
 	UserID     string     `json:"user_id"`
